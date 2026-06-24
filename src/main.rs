@@ -55,6 +55,11 @@ async fn run_cli(state: &AppState, args: &[String]) -> anyhow::Result<()> {
                 }
             }
         }
+        "reparse" => {
+            let n = homeconnect::parse::reparse_all(state).await?;
+            println!("reparsed {n} segments");
+            Ok(())
+        }
         other => {
             eprintln!("unknown command: {other}");
             std::process::exit(2);

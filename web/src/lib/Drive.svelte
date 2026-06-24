@@ -9,14 +9,19 @@
 
   let mapEl;
   let videoEl;
+  let audioEl;
   let map;
   let marker;
   let hls;
+  let audioHls;
 
   let coords = $state([]); // {t, lat, lng, speed}
   let events = $state([]);
+  let telemetry = $state([]); // {t, speed, gear, lb, rb, brake, gas, steer, cruise}
   let error = $state('');
   let curT = $state(0);
+  let tnow = $state(null); // current telemetry sample
+  let rate = $state(1);    // playback speed
   let cam = $state('qcamera');
 
   // Which cameras this route actually has (from the route's max* fields).
@@ -58,8 +63,22 @@
     const nums = route.segment_numbers?.length ? route.segment_numbers : [0];
     const coordChunks = await Promise.all(nums.map((n) => fetchJson(seg(n, 'coords.json'))));
     const eventChunks = await Promise.all(nums.map((n) => fetchJson(seg(n, 'events.json'))));
+    const telemChunks = await Promise.all(nums.map((n) => fetchJson(seg(n, 'telemetry.json'))));
     coords = coordChunks.filter(Boolean).flat();
     events = eventChunks.filter(Boolean).flat();
+    telemetry = telemChunks.filter(Boolean).flat();
+  }
+
+  // Telemetry sample nearest the current playback time (binary search).
+  function telemAt(t) {
+    if (!telemetry.length) return null;
+    let lo = 0, hi = telemetry.length - 1, best = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (telemetry[mid].t <= t) { best = mid; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    return telemetry[best];
   }
 
   function drawPath() {
@@ -91,9 +110,16 @@
       .addTo(map);
   }
 
+  function setRate(r) {
+    rate = r;
+    if (videoEl) videoEl.playbackRate = r;
+    if (audioEl) audioEl.playbackRate = r;
+  }
+
   // Move the marker to the GPS point nearest the video's current time.
   function syncMarker(t) {
     curT = t;
+    tnow = telemAt(t);
     if (!marker || !coords.length) return;
     let lo = 0, hi = coords.length - 1, best = 0;
     while (lo <= hi) {
@@ -199,8 +225,30 @@
           {/each}
         </div>
       {/if}
-      <video bind:this={videoEl} controls playsinline muted></video>
-      <div class="clock muted">t = {fmtT(curT)}</div>
+      <div class="video-wrap">
+        <video bind:this={videoEl} controls playsinline muted></video>
+        <audio bind:this={audioEl} style="display:none"></audio>
+        {#if tnow}
+          <div class="hud">
+            <div class="spd"><span class="n">{Math.round(tnow.speed)}</span><span class="u">mph</span></div>
+            <div class="chips">
+              <span class="chip">{tnow.gear?.toUpperCase() ?? '—'}</span>
+              {#if tnow.cruise}<span class="chip on">openpilot</span>{/if}
+              {#if tnow.brake}<span class="chip brk">brake</span>{/if}
+              <span class="arrow" class:lit={tnow.lb}>◀</span>
+              <span class="arrow" class:lit={tnow.rb}>▶</span>
+            </div>
+          </div>
+        {/if}
+      </div>
+      <div class="ctrl">
+        <span class="muted">t = {fmtT(curT)}</span>
+        <span class="rates">
+          {#each [0.5, 1, 1.5, 2] as r}
+            <button class="ghost rate" class:active={rate === r} onclick={() => setRate(r)}>{r}×</button>
+          {/each}
+        </span>
+      </div>
       <div class="events">
         <div class="ev-head">Events</div>
         {#if !events.length}
@@ -231,7 +279,26 @@
   .side { border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
   .cams { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); }
   .cams .active { border-color: var(--accent); color: var(--accent); }
-  video { width: 100%; background: #000; aspect-ratio: 16/9; }
+  .video-wrap { position: relative; }
+  video { width: 100%; background: #000; aspect-ratio: 16/9; display: block; }
+  .hud {
+    position: absolute; top: 8px; left: 8px; right: 8px; display: flex;
+    align-items: flex-start; justify-content: space-between; pointer-events: none;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  }
+  .hud .spd { display: flex; align-items: baseline; gap: 4px; }
+  .hud .spd .n { font-size: 30px; font-weight: 700; line-height: 1; }
+  .hud .spd .u { font-size: 12px; color: #cfd6dd; }
+  .hud .chips { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+  .chip { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.25); }
+  .chip.on { background: #2f81f7; border-color: #2f81f7; }
+  .chip.brk { background: #f85149; border-color: #f85149; }
+  .arrow { font-size: 16px; color: #444; }
+  .arrow.lit { color: #3fb950; }
+  .ctrl { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+  .rates { display: flex; gap: 4px; }
+  .rate { padding: 3px 8px; font-size: 12px; }
+  .rate.active { border-color: var(--accent); color: var(--accent); }
   .clock { padding: 6px 12px; border-bottom: 1px solid var(--border); }
   .events { overflow: auto; padding: 8px; }
   .ev-head { font-weight: 600; margin: 4px 6px 8px; }

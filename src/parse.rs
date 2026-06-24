@@ -9,6 +9,7 @@ use capnp::serialize;
 use serde::Serialize;
 use serde_json::json;
 
+use crate::cereal::car_capnp::car_state::GearShifter;
 use crate::cereal::log_capnp::{event, init_data, selfdrive_state};
 use crate::db::now_millis;
 use crate::error::AppResult;
@@ -34,6 +35,36 @@ struct Coord {
     lng: f64,
     speed: f32,
     dist: f64, // meters from previous point
+}
+
+/// A downsampled vehicle-telemetry sample (≈4 Hz), synced to the video by `t`.
+#[derive(Serialize)]
+struct Telem {
+    t: f64,       // seconds since onroad start
+    speed: f32,   // mph
+    gear: String, // park/drive/reverse/neutral/...
+    lb: bool,     // left blinker
+    rb: bool,     // right blinker
+    brake: bool,  // brake pressed
+    gas: bool,    // gas pressed
+    steer: f32,   // steering angle (deg)
+    cruise: bool, // openpilot/cruise engaged
+}
+
+fn gear_name(g: GearShifter) -> &'static str {
+    use GearShifter::*;
+    match g {
+        Unknown => "unknown",
+        Park => "park",
+        Drive => "drive",
+        Neutral => "neutral",
+        Reverse => "reverse",
+        Sport => "sport",
+        Low => "low",
+        Brake => "brake",
+        Eco => "eco",
+        Manumatic => "manumatic",
+    }
 }
 
 #[derive(Serialize)]
@@ -95,6 +126,8 @@ fn device_type_name(dt: init_data::DeviceType) -> &'static str {
 struct Accum {
     coords: Vec<Coord>,
     events: Vec<DriveEvent>,
+    telemetry: Vec<Telem>,
+    last_telem_mono: u64,
     thumbnails: Vec<Vec<u8>>,
     total_meters: f64,
     first_gps: Option<(f64, f64, i64)>, // lat, lng, unix_ms
@@ -110,6 +143,30 @@ struct Accum {
     has_gps: bool,
     // selfdrive state collapsing
     last_state: Option<(bool, i32)>,
+}
+
+/// Re-parse every stored segment's qlog (regenerates routes/segments + the
+/// coords/events/telemetry/sprite artifacts). Used after parser changes.
+pub async fn reparse_all(state: &AppState) -> AppResult<usize> {
+    let segs: Vec<(String, i64)> =
+        sqlx::query_as("SELECT canonical_route_name, number FROM segments ORDER BY canonical_route_name, number")
+            .fetch_all(&state.pool)
+            .await?;
+    let mut n = 0;
+    for (route, seg) in segs {
+        let Some((dongle, ts)) = route.split_once('|') else { continue };
+        for f in ["qlog.zst", "qlog.bz2"] {
+            let key = blob_key(dongle, ts, seg, f);
+            if let Ok(bytes) = state.blobs.get(&key).await {
+                if parse_and_store(state, dongle, ts, seg, f, &bytes).await.is_ok() {
+                    n += 1;
+                }
+                break;
+            }
+        }
+    }
+    tracing::info!(segments = n, "reparsed");
+    Ok(n)
 }
 
 /// Parse a qlog/rlog segment and persist its derived data + artifacts.
@@ -152,6 +209,11 @@ pub async fn parse_and_store(
     if !acc.events.is_empty() {
         let bytes = serde_json::to_vec(&acc.events).unwrap_or_default();
         let key = blob_key(dongle, timestamp, segment, "events.json");
+        let _ = state.blobs.put(&key, &bytes).await;
+    }
+    if !acc.telemetry.is_empty() {
+        let bytes = serde_json::to_vec(&acc.telemetry).unwrap_or_default();
+        let key = blob_key(dongle, timestamp, segment, "telemetry.json");
         let _ = state.blobs.put(&key, &bytes).await;
     }
     if !acc.thumbnails.is_empty() {
@@ -277,6 +339,28 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
                     }),
                 });
                 acc.last_state = Some(cur);
+            }
+        }
+        CarState(Ok(cs)) => {
+            // Downsample to ~4 Hz; needs the onroad baseline for a timeline.
+            if let Some(onroad) = acc.onroad_mono {
+                if mono >= acc.last_telem_mono.saturating_add(250_000_000) {
+                    acc.last_telem_mono = mono;
+                    let t = (mono as i64 - onroad as i64) as f64 / 1_000_000_000.0;
+                    let gear = cs.get_gear_shifter().map(gear_name).unwrap_or("unknown").to_string();
+                    let cruise = cs.get_cruise_state().map(|c| c.get_enabled()).unwrap_or(false);
+                    acc.telemetry.push(Telem {
+                        t,
+                        speed: cs.get_v_ego() * 2.236_936, // m/s → mph
+                        gear,
+                        lb: cs.get_left_blinker(),
+                        rb: cs.get_right_blinker(),
+                        brake: cs.get_brake_pressed(),
+                        gas: cs.get_gas_pressed(),
+                        steer: cs.get_steering_angle_deg(),
+                        cruise,
+                    });
+                }
             }
         }
         Can(_) => {

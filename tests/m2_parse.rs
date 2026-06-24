@@ -87,6 +87,15 @@ fn build_qlog() -> Vec<u8> {
         ss.set_alert_size(selfdrive_state::AlertSize::None);
     });
 
+    // CarState telemetry (driving in DRIVE at ~22.4 mph, left blinker on).
+    write_event(&mut raw, onroad + 2_000_000_000, |ev| {
+        let mut cs = ev.init_car_state();
+        cs.set_v_ego(10.0); // m/s → ~22.37 mph
+        cs.set_gear_shifter(homeconnect::cereal::car_capnp::car_state::GearShifter::Drive);
+        cs.set_left_blinker(true);
+        cs.set_brake_pressed(false);
+    });
+
     // One CAN frame (presence flag) and a thumbnail.
     write_event(&mut raw, onroad + 100, |ev| {
         let _ = ev.init_can(1);
@@ -186,6 +195,15 @@ async fn parses_synthetic_qlog_into_route_and_artifacts() {
     let sprite_key = homeconnect::storage::blob_key(dongle, ts, 0, "sprite.jpg");
     let sprite = state.blobs.get(&sprite_key).await.expect("sprite.jpg");
     assert!(image::load_from_memory(&sprite).is_ok(), "sprite is valid JPEG");
+
+    // telemetry.json from CarState
+    let telem_key = homeconnect::storage::blob_key(dongle, ts, 0, "telemetry.json");
+    let telem_bytes = state.blobs.get(&telem_key).await.expect("telemetry.json");
+    let telem: serde_json::Value = serde_json::from_slice(&telem_bytes).unwrap();
+    let t0 = &telem.as_array().unwrap()[0];
+    assert_eq!(t0["gear"], "drive");
+    assert_eq!(t0["lb"], true);
+    assert!((t0["speed"].as_f64().unwrap() - 22.37).abs() < 0.1, "speed in mph");
 
     // device last-GPS updated
     let (lat,): (f64,) = sqlx::query_as("SELECT last_gps_lat FROM devices WHERE dongle_id = ?")
