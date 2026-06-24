@@ -1,0 +1,88 @@
+<script>
+  import { api, getToken, getUser, clearSession } from './lib/api.js';
+  import Login from './lib/Login.svelte';
+  import Drives from './lib/Drives.svelte';
+  import Drive from './lib/Drive.svelte';
+  import Settings from './lib/Settings.svelte';
+
+  let token = $state(getToken());
+  let user = $state(getUser());
+  let selected = $state(null); // { route }
+  let view = $state('drives'); // 'drives' | 'settings'
+
+  // A `?pair=<token>` in the URL (e.g. scanned device QR) pairs once logged in.
+  let pendingPair = new URLSearchParams(location.search).get('pair');
+  let banner = $state('');
+
+  $effect(() => {
+    if (token && pendingPair) {
+      const tok = pendingPair;
+      pendingPair = null;
+      api
+        .pair(tok)
+        .then((r) => { banner = `Device paired (${r.dongle_id}).`; })
+        .catch((e) => { banner = `Pairing failed: ${e.message}`; })
+        .finally(() => {
+          // strip the pair param from the URL
+          history.replaceState(null, '', location.pathname);
+          setTimeout(() => (banner = ''), 6000);
+        });
+    }
+  });
+
+  function onLogin(tok) {
+    token = tok;
+    user = getUser();
+  }
+  function logout() {
+    clearSession();
+    token = null;
+    user = null;
+    selected = null;
+    view = 'drives';
+  }
+</script>
+
+<div class="layout">
+  <header>
+    <div class="brand">home<span>connect</span></div>
+    {#if token}
+      <div class="right">
+        {#if user?.is_admin}
+          <button class="ghost" onclick={() => (view = view === 'settings' ? 'drives' : 'settings')}>
+            {view === 'settings' ? 'Drives' : 'Settings'}
+          </button>
+        {/if}
+        <span class="muted">{user?.username ?? ''}</span>
+        <button class="ghost" onclick={logout}>Log out</button>
+      </div>
+    {/if}
+  </header>
+
+  {#if banner}<div class="banner">{banner}</div>{/if}
+
+  <main>
+    {#if !token}
+      <Login {onLogin} />
+    {:else if view === 'settings'}
+      <Settings onback={() => (view = 'drives')} />
+    {:else if selected}
+      <Drive route={selected.route} onback={() => (selected = null)} />
+    {:else}
+      <Drives onopen={(route) => (selected = { route })} />
+    {/if}
+  </main>
+</div>
+
+<style>
+  .layout { display: flex; flex-direction: column; height: 100%; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  .brand { font-weight: 700; font-size: 18px; }
+  .brand span { color: var(--accent); }
+  .right { display: flex; align-items: center; gap: 12px; }
+  main { flex: 1; min-height: 0; overflow: auto; }
+  .banner { background: var(--accent); color: #fff; padding: 8px 16px; font-size: 13px; }
+</style>

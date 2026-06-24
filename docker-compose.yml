@@ -1,0 +1,31 @@
+# Production homeconnect service.
+#
+#   docker compose build        # build the release image (SPA + binary)
+#   docker compose up -d         # run it, restarting on failure/reboot
+#   docker compose logs -f       # tail logs
+#
+# Data (SQLite + blobs + transcode cache) lives on the bulk disk; the port is
+# bound to localhost for Caddy (homeconnect.bam) to reverse-proxy. Runs as the
+# host user so data files stay owned by you. Secrets come from .env.
+#
+# Distinct project name keeps this isolated from the dev compose (which also has
+# a service named `app`).
+name: homeconnect
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: homeconnect:local
+    container_name: homeconnect-server
+    restart: unless-stopped
+    user: "1000:1000"
+    volumes:
+      - /data/storage/homeconnect:/data
+    env_file:
+      - .env
+    environment:
+      HC_BIND: "0.0.0.0:8099"
+      HC_DATA_DIR: "/data"
+    ports:
+      - "127.0.0.1:8099:8099"

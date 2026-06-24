@@ -1,0 +1,32 @@
+# Dev/build image for homeconnect. Debian-based Rust toolchain plus the native
+# build tools the project needs:
+#   - capnproto:  the `capnp` compiler that capnpc shells out to (qlog parsing)
+#   - ffmpeg:     HEVC->H.264 transcoding (M5)
+#   - nodejs/npm: building the Svelte SPA (M4)
+# We run as the host user (uid/gid passed at build) so files written into the
+# bind-mounted repo stay owned by you, not root.
+FROM rust:1-bookworm
+
+ARG UID=1000
+ARG GID=1000
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        capnproto \
+        ffmpeg \
+        nodejs \
+        npm \
+        pkg-config \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a matching user so cargo writes are owned by the host user.
+RUN groupadd -g ${GID} dev 2>/dev/null || true; \
+    useradd -m -u ${UID} -g ${GID} -s /bin/bash dev 2>/dev/null || true
+
+USER ${UID}:${GID}
+WORKDIR /work
+
+# Cargo caches live under the repo (host-owned bind mount) so they persist and
+# stay writable without root.
+ENV CARGO_HOME=/work/.dev/cargo \
+    CARGO_TARGET_DIR=/work/.dev/target

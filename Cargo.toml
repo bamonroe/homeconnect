@@ -1,0 +1,54 @@
+[package]
+name = "homeconnect"
+version = "0.1.0"
+edition = "2021"
+description = "A home-first, self-hosted comma.ai connect server"
+
+[dependencies]
+tokio = { version = "1.52", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["fs", "trace", "set-header"] }
+futures-util = "0.3"
+
+# DB — runtime queries (query_as + FromRow), no compile-time DB needed
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+
+# auth
+# jsonwebtoken 10 requires choosing a crypto backend; rust_crypto is pure-Rust
+# (no C toolchain / aws-lc build needed).
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
+# argon2: latest *stable* is 0.5.3 (0.6 is still an RC — not shipping a
+# release-candidate password hasher). "std" pulls in OsRng (getrandom).
+argon2 = { version = "0.5", features = ["std"] }
+
+# serde / json
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# util
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# qlog parsing: cereal capnp + decompression + sprite assembly
+capnp = "0.26"
+zstd = "0.13"
+bzip2 = "0.6"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[build-dependencies]
+capnpc = "0.26"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1.52", features = ["full"] }
+tempfile = "3"
+tokio-tungstenite = "0.29"
+futures-util = "0.3"

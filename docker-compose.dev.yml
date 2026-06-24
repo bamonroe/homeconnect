@@ -1,0 +1,30 @@
+# Dev/build container for homeconnect (toolchain: rust + capnp + node + ffmpeg).
+# Used for compiling, testing, and SPA builds — NOT for serving (production runs
+# from docker-compose.yml). No published port so it can't clash with prod.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.dev.yml exec app cargo test
+#   docker compose -f docker-compose.dev.yml exec --workdir /work/web app npm run build
+#
+# The repo is bind-mounted at /work; tests use their own temp dirs, so this
+# shares /data with prod harmlessly (it doesn't run the server).
+#
+# Separate project name so dev and prod don't disturb each other's containers.
+name: homeconnect-dev
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        UID: "1000"
+        GID: "1000"
+    container_name: homeconnect-dev
+    working_dir: /work
+    volumes:
+      - .:/work
+      - /data/storage/homeconnect:/data
+    environment:
+      HC_DATA_DIR: "/data"
+      HC_PUBLIC_URL: "http://homeconnect.bam"
+    command: ["sleep", "infinity"]
