@@ -38,7 +38,7 @@ button.ghost {
 }
 button:disabled { opacity: 0.5; cursor: default; }
 
-input {
+input, select {
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 6px;

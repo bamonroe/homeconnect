@@ -374,8 +374,10 @@ pub async fn routes_segments(
         .await?
     } else {
         sqlx::query_as(
+            // start_time_utc_millis > 0 hides GPS-less stubs (engine-on-but-never-
+            // moved / no fix) that have no date, distance, or useful track.
             "SELECT * FROM routes \
-             WHERE device_dongle_id = ? AND maxqlog != -1 \
+             WHERE device_dongle_id = ? AND maxqlog != -1 AND start_time_utc_millis > 0 \
                AND start_time_utc_millis >= ? AND start_time_utc_millis <= ? \
              ORDER BY start_time_utc_millis DESC LIMIT ? OFFSET ?",
         )

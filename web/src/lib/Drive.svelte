@@ -112,7 +112,10 @@
       hls = null;
     }
     if (Hls.isSupported()) {
-      hls = new Hls();
+      // Full-res/driver segments are transcoded on first view (~seconds each),
+      // so allow a generous fragment timeout and don't buffer many ahead (keeps
+      // transcodes serialized, one at a time).
+      hls = new Hls({ fragLoadingTimeOut: 90000, maxBufferLength: 30 });
       hls.loadSource(url);
       hls.attachMedia(videoEl);
     } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
@@ -147,13 +150,24 @@
     return `${m}:${String(sec).padStart(2, '0')}`;
   }
 
+  let mapReady = false;
+  let drawn = false;
+  // Draw exactly once, when BOTH the map style is loaded and coords are fetched
+  // (either can finish first — attaching the load handler before any await
+  // avoids missing the event when the style is cached on a 2nd drive).
+  function maybeDraw() {
+    if (drawn || !map || !mapReady || coords.length < 2) return;
+    drawn = true;
+    drawPath();
+  }
+
   onMount(async () => {
     map = new maplibregl.Map({ container: mapEl, style: STYLE, center: [0, 0], zoom: 1 });
+    map.on('load', () => { mapReady = true; map.resize(); maybeDraw(); });
+    videoEl.addEventListener('timeupdate', () => syncMarker(videoEl.currentTime));
     try {
       await loadArtifacts();
-      map.on('load', drawPath);
-      if (map.loaded()) drawPath();
-      videoEl.addEventListener('timeupdate', () => syncMarker(videoEl.currentTime));
+      maybeDraw();
       loadVideo();
     } catch (e) {
       error = e.message;

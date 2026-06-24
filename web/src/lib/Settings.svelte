@@ -7,13 +7,27 @@
   let error = $state('');
   let msg = $state('');
   let busy = $state(false);
+  let tc = $state(null); // { current, devices: [{value,label,encodes}] }
 
   async function load() {
     error = '';
     try {
       cfg = await api.retention();
+      tc = await api.transcode();
     } catch (e) {
       error = e.message;
+    }
+  }
+
+  async function saveTranscode() {
+    busy = true; error = ''; msg = '';
+    try {
+      await api.setTranscode(tc.current);
+      msg = 'Transcode device saved.';
+    } catch (e) {
+      error = e.message;
+    } finally {
+      busy = false;
     }
   }
 
@@ -69,6 +83,28 @@
         <span class="muted">· {cfg.route_count} drives stored</span>
       </div>
     </div>
+
+    {#if tc}
+      <div class="card">
+        <h3>Transcoding device</h3>
+        <p class="muted small">
+          Which device decodes/encodes the full-res &amp; driver cameras. A capable GPU is faster
+          and frees the CPU when the server is busy; CPU always works as a fallback.
+        </p>
+        <label>Device
+          <select bind:value={tc.current}>
+            {#each tc.devices as d}
+              <option value={d.value} disabled={!d.encodes}>
+                {d.label}{d.encodes ? '' : ' — no H.264 encode'}
+              </option>
+            {/each}
+          </select>
+        </label>
+        <div class="actions">
+          <button disabled={busy} onclick={saveTranscode}>Save device</button>
+        </div>
+      </div>
+    {/if}
 
     <div class="card">
       <h3>Retention policy</h3>

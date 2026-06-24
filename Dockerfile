@@ -20,8 +20,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cp /build/target/release/homeconnect /usr/local/bin/homeconnect
 
 FROM debian:bookworm-slim AS runtime
+# ffmpeg + VAAPI drivers for both GPUs so either is selectable at runtime:
+#   mesa-va-drivers          → radeonsi (AMD)
+#   intel-media-va-driver    → iHD (Intel Quick Sync)
+# (vainfo is handy for debugging GPU access from inside the container.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ffmpeg ca-certificates \
+        ffmpeg ca-certificates libva2 vainfo \
+        mesa-va-drivers intel-media-va-driver \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /usr/local/bin/homeconnect /usr/local/bin/homeconnect

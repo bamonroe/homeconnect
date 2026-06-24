@@ -78,6 +78,7 @@ pub fn router(state: AppState) -> Router {
         // admin: retention policy
         .route("/v1/admin/retention", get(api::settings::get_retention).post(api::settings::set_retention))
         .route("/v1/admin/retention/run", post(api::settings::run_retention))
+        .route("/v1/admin/transcode", get(api::settings::get_transcode).post(api::settings::set_transcode))
         .route("/v1/devices/{dongle_id}/routes_segments", get(api::v1::routes_segments))
         .route("/v1/route/{fullname}/{cam}", get(api::v1::camera_m3u8))
         .route("/v1/transcode/{dongle}/{timestamp}/{segment}/{file}", get(serve::transcode))

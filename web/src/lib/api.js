@@ -90,4 +90,7 @@ export const api = {
   retention: () => req('GET', '/v1/admin/retention'),
   setRetention: (p) => req('POST', '/v1/admin/retention', p),
   runRetention: () => req('POST', '/v1/admin/retention/run'),
+  // admin: transcode device
+  transcode: () => req('GET', '/v1/admin/transcode'),
+  setTranscode: (device) => req('POST', '/v1/admin/transcode', { device }),
 };

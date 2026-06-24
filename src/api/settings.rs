@@ -2,12 +2,14 @@
 
 use axum::extract::State;
 use axum::Json;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::retention::{self, Policy};
 use crate::state::AppState;
+use crate::transcode;
 
 fn require_admin(user: &crate::models::User) -> AppResult<()> {
     if user.is_admin == 0 {
@@ -60,4 +62,43 @@ pub async fn run_retention(
     require_admin(&user)?;
     let deleted = retention::run_once(&state).await?;
     Ok(Json(json!({ "deleted": deleted })))
+}
+
+/// GET /v1/admin/transcode — current device + the selectable list.
+pub async fn get_transcode(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    let current = match transcode::current_device(&state).await {
+        Some(d) => d,
+        None => "cpu".to_string(),
+    };
+    let devices = transcode::list_devices().await;
+    Ok(Json(json!({ "current": current, "devices": devices })))
+}
+
+#[derive(Deserialize)]
+pub struct TranscodeReq {
+    pub device: String,
+}
+
+/// POST /v1/admin/transcode — set the encode/decode device.
+pub async fn set_transcode(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<TranscodeReq>,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    // Only accept "cpu" or a device the server actually enumerated.
+    let valid = req.device == "cpu"
+        || transcode::list_devices()
+            .await
+            .iter()
+            .any(|d| d.value == req.device);
+    if !valid {
+        return Err(AppError::BadRequest("unknown transcode device".into()));
+    }
+    transcode::set_device(&state, &req.device).await?;
+    Ok(Json(json!({ "ok": true, "device": req.device })))
 }

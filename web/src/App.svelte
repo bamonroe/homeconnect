@@ -67,7 +67,9 @@
     {:else if view === 'settings'}
       <Settings onback={() => (view = 'drives')} />
     {:else if selected}
-      <Drive route={selected.route} onback={() => (selected = null)} />
+      {#key selected.route.fullname}
+        <Drive route={selected.route} onback={() => (selected = null)} />
+      {/key}
     {:else}
       <Drives onopen={(route) => (selected = { route })} />
     {/if}

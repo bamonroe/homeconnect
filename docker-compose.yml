@@ -20,6 +20,12 @@ services:
     container_name: homeconnect-server
     restart: unless-stopped
     user: "1000:1000"
+    # GPU transcoding: expose the DRM render nodes and join the host 'render'
+    # group (gid 989) so the unprivileged user can use VAAPI on the AMD card.
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "989"
     volumes:
       - /data/storage/homeconnect:/data
     env_file:
@@ -27,5 +33,6 @@ services:
     environment:
       HC_BIND: "0.0.0.0:8099"
       HC_DATA_DIR: "/data"
+      HC_VAAPI_DEVICE: "/dev/dri/renderD129"   # AMD Radeon RX 550 (Intel iGPU = renderD128)
     ports:
       - "127.0.0.1:8099:8099"
