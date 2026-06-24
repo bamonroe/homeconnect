@@ -26,6 +26,44 @@
   let rate = $state(1);    // playback speed
   let cam = $state('qcamera');
 
+  // Resizable panes (persisted). rightW = width of the video/events column;
+  // videoH = height of the video within that column.
+  let gridEl, videoWrapEl;
+  let rightW = $state(Number(localStorage.getItem('hc_rightW')) || 420);
+  let videoH = $state(Number(localStorage.getItem('hc_videoH')) || 240);
+
+  function startColResize(e) {
+    e.preventDefault();
+    const rect = gridEl.getBoundingClientRect();
+    const move = (ev) => {
+      rightW = Math.max(280, Math.min(rect.width - 220, rect.right - ev.clientX));
+      map?.resize();
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      localStorage.setItem('hc_rightW', rightW);
+      map?.resize();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
+  function startRowResize(e) {
+    e.preventDefault();
+    const move = (ev) => {
+      const top = videoWrapEl.getBoundingClientRect().top;
+      videoH = Math.max(120, ev.clientY - top);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      localStorage.setItem('hc_videoH', videoH);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
   // Which cameras this route actually has (from the route's max* fields).
   const cameras = [
     { id: 'qcamera', label: 'Road', has: true },
@@ -258,9 +296,10 @@
 
   {#if error}<div class="error pad">{error}</div>{/if}
 
-  <div class="grid">
+  <div class="grid" bind:this={gridEl}>
     <div class="map" bind:this={mapEl}></div>
-    <div class="side">
+    <div class="col-resizer" onpointerdown={startColResize} title="Drag to resize"></div>
+    <div class="side" style="width:{rightW}px">
       {#if cameras.length > 1}
         <div class="cams">
           {#each cameras as c}
@@ -268,7 +307,7 @@
           {/each}
         </div>
       {/if}
-      <div class="video-wrap">
+      <div class="video-wrap" bind:this={videoWrapEl} style="height:{videoH}px">
         <video bind:this={videoEl} controls playsinline muted></video>
         <audio bind:this={audioEl} style="display:none"></audio>
         {#if tnow}
@@ -292,6 +331,7 @@
           {/each}
         </span>
       </div>
+      <div class="row-resizer" onpointerdown={startRowResize} title="Drag to resize"></div>
       <div class="events">
         <div class="ev-head">Events</div>
         {#if !events.length}
@@ -318,13 +358,17 @@
   .bar .title { font-weight: 600; }
   .bar .manage { margin-left: auto; }
   .pad { padding: 10px 16px; }
-  .grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 380px; }
-  .map { height: 100%; }
-  .side { border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
-  .cams { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); }
+  .grid { flex: 1; min-height: 0; display: flex; }
+  .map { flex: 1; min-width: 0; height: 100%; }
+  .col-resizer { width: 6px; flex: none; cursor: col-resize; background: var(--border); }
+  .col-resizer:hover { background: var(--accent); }
+  .side { flex: none; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+  .cams { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); flex: none; }
   .cams .active { border-color: var(--accent); color: var(--accent); }
-  .video-wrap { position: relative; }
-  video { width: 100%; background: #000; aspect-ratio: 16/9; display: block; }
+  .video-wrap { position: relative; flex: none; background: #000; }
+  video { width: 100%; height: 100%; background: #000; object-fit: contain; display: block; }
+  .row-resizer { height: 6px; flex: none; cursor: row-resize; background: var(--border); }
+  .row-resizer:hover { background: var(--accent); }
   .hud {
     position: absolute; top: 8px; left: 8px; right: 8px; display: flex;
     align-items: flex-start; justify-content: space-between; pointer-events: none;
@@ -339,12 +383,12 @@
   .chip.brk { background: #f85149; border-color: #f85149; }
   .arrow { font-size: 16px; color: #444; }
   .arrow.lit { color: #3fb950; }
-  .ctrl { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+  .ctrl { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; }
   .rates { display: flex; gap: 4px; }
   .rate { padding: 3px 8px; font-size: 12px; }
   .rate.active { border-color: var(--accent); color: var(--accent); }
   .clock { padding: 6px 12px; border-bottom: 1px solid var(--border); }
-  .events { overflow: auto; padding: 8px; }
+  .events { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
   .ev-head { font-weight: 600; margin: 4px 6px 8px; }
   .ev {
     display: flex; align-items: center; justify-content: space-between; width: 100%;
@@ -355,7 +399,9 @@
   .badge.on { background: #3fb950; }
   .small { font-size: 12px; }
   @media (max-width: 800px) {
-    .grid { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
-    .side { border-left: 0; border-top: 1px solid var(--border); }
+    .grid { flex-direction: column; }
+    .map { height: 40%; flex: none; }
+    .col-resizer { display: none; }
+    .side { width: 100% !important; border-left: 0; border-top: 1px solid var(--border); flex: 1; }
   }
 </style>
