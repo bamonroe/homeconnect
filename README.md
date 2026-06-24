@@ -117,6 +117,8 @@ docker compose -f docker-compose.dev.yml exec --workdir /work/web app npm run bu
 
 ## Attribution & license
 
+homeconnect is released under the [MIT License](./LICENSE).
+
 The Cap'n Proto schemas under `vendor/cereal/` are from
-[commaai/openpilot](https://github.com/commaai/cereal) and retain their original
-license. The rest is provided as-is for self-hosting.
+[commaai/cereal](https://github.com/commaai/cereal) and retain their original
+(MIT) license.
