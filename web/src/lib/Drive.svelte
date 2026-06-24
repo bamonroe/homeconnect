@@ -29,8 +29,8 @@
   // Resizable panes (persisted). rightW = width of the video/events column;
   // videoH = height of the video within that column.
   let gridEl, videoWrapEl;
-  let rightW = $state(Number(localStorage.getItem('hc_rightW')) || 420);
-  let videoH = $state(Number(localStorage.getItem('hc_videoH')) || 240);
+  let rightW = $state(Number(localStorage.getItem('hc_rightW')) || 620);
+  let videoH = $state(Number(localStorage.getItem('hc_videoH')) || 400);
 
   function startColResize(e) {
     e.preventDefault();
@@ -326,7 +326,7 @@
       <div class="ctrl">
         <span class="muted">t = {fmtT(curT)}</span>
         <span class="rates">
-          {#each [0.5, 1, 1.5, 2] as r}
+          {#each [0.5, 1, 1.5, 2, 4, 8] as r}
             <button class="ghost rate" class:active={rate === r} onclick={() => setRate(r)}>{r}×</button>
           {/each}
         </span>
