@@ -128,6 +128,29 @@ Transcoding device** dropdown lists every detected GPU plus CPU, and any GPU
 failure falls back to CPU per-transcode. Note that a low-end discrete card can be
 *slower* than a modern iGPU's fixed-function encoder — pick by measuring.
 
+## Roadmap / ideas
+
+More can be mined from the qlog data we already collect. Rough priority:
+
+**Quick wins (data already in hand)**
+- [ ] Trip stats + **autonomy %** — engaged ÷ total miles, disengagements/100 mi, avg/max speed, drive time; per-drive and all-time.
+- [ ] **Hard-event highlights** — auto-flag hard braking / acceleration / cornering (from `aEgo`/`yawRate`) and list them like engagements (click to jump).
+- [ ] Speed/accel **graph along the scrubber**.
+
+**Higher value, moderate effort (verify the message is in the qlog first)**
+- [ ] **Disengagement reasons** (`onroadEvents`) — annotate each disengage with *why* (override, distracted, model-uncertain, …). The standout review feature.
+- [ ] **Driver attention** timeline + distracted markers (`driverMonitoringState`).
+- [ ] **Lead car / following distance** over time (`radarState`).
+- [ ] **Device health** — CPU temp, free space, network, thermal-throttle events (`DeviceState`).
+
+**Flashy / bigger projects**
+- [ ] openpilot-style **overlay on the road camera** — predicted path + lane lines + lead box (`modelV2`; needs camera projection + a canvas synced to playback).
+- [ ] **All-drives heatmap** — every trip's GPS aggregated on one map.
+
+**Intentionally out of scope**
+- Live view / remote control (WebRTC + steering/throttle) — security blast radius.
+- EV battery/SoC & power — not in the logged CAN (BMS is behind the powertrain gateway). See CLAUDE.md.
+
 ## Development
 
 See [CLAUDE.md](./CLAUDE.md) for the full developer guide (build/test workflow,
