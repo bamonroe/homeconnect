@@ -132,7 +132,9 @@ struct Accum {
     total_meters: f64,
     first_gps: Option<(f64, f64, i64)>, // lat, lng, unix_ms
     last_gps: Option<(f64, f64, i64)>,
-    onroad_mono: Option<u64>,
+    // Route-start mono (each segment's qlog opens with initData carrying it), so
+    // `mono - route_base` is the route-relative time, matching the video grid.
+    route_base_mono: Option<u64>,
     last_pt: Option<(f64, f64)>,
     car_fingerprint: String,
     git_remote: String,
@@ -180,6 +182,7 @@ pub async fn parse_and_store(
 ) -> AppResult<()> {
     let data = decompress(file, raw)?;
     let mut acc = Accum::default();
+    let _ = segment; // (kept in the signature; time is derived from mono below)
 
     let opts = ReaderOptions {
         traversal_limit_in_words: Some(usize::MAX),
@@ -248,6 +251,10 @@ pub async fn parse_and_store(
 
 fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
     use event::Which::*;
+    // Route-relative time: the first event (initData) carries the route-start
+    // mono, so elapsed-since-route-start = the video timeline position.
+    let base = *acc.route_base_mono.get_or_insert(mono);
+    let t = mono.saturating_sub(base) as f64 / 1_000_000_000.0;
     match which {
         GpsLocationExternal(Ok(gps)) | GpsLocation(Ok(gps)) => {
             let has_fix = (gps.get_flags() % 2 == 1) || gps.get_has_fix();
@@ -271,15 +278,7 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
             acc.total_meters += dist;
             acc.last_pt = Some((lat, lng));
 
-            if let Some(onroad) = acc.onroad_mono {
-                let t = (mono as i64 - onroad as i64) as f64 / 1_000_000_000.0;
-                acc.coords.push(Coord { t, lat, lng, speed, dist });
-            }
-        }
-        DeviceState(Ok(ds)) => {
-            if ds.get_started() && acc.onroad_mono.is_none() {
-                acc.onroad_mono = Some(ds.get_started_mono_time());
-            }
+            acc.coords.push(Coord { t, lat, lng, speed, dist });
         }
         CarParams(Ok(cp)) => {
             if let Ok(fp) = cp.get_car_fingerprint() {
@@ -318,10 +317,7 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
             }
             let cur = (enabled, alert_status);
             if acc.last_state != Some(cur) {
-                let route_offset_millis = acc
-                    .onroad_mono
-                    .map(|o| (mono as i64 - o as i64) / 1_000_000)
-                    .unwrap_or(0);
+                let route_offset_millis = (t * 1000.0) as i64;
                 // Close the previous event's interval.
                 if let Some(prev) = acc.events.last_mut() {
                     if let Some(obj) = prev.data.as_object_mut() {
@@ -342,25 +338,22 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
             }
         }
         CarState(Ok(cs)) => {
-            // Downsample to ~4 Hz; needs the onroad baseline for a timeline.
-            if let Some(onroad) = acc.onroad_mono {
-                if mono >= acc.last_telem_mono.saturating_add(250_000_000) {
-                    acc.last_telem_mono = mono;
-                    let t = (mono as i64 - onroad as i64) as f64 / 1_000_000_000.0;
-                    let gear = cs.get_gear_shifter().map(gear_name).unwrap_or("unknown").to_string();
-                    let cruise = cs.get_cruise_state().map(|c| c.get_enabled()).unwrap_or(false);
-                    acc.telemetry.push(Telem {
-                        t,
-                        speed: cs.get_v_ego() * 2.236_936, // m/s → mph
-                        gear,
-                        lb: cs.get_left_blinker(),
-                        rb: cs.get_right_blinker(),
-                        brake: cs.get_brake_pressed(),
-                        gas: cs.get_gas_pressed(),
-                        steer: cs.get_steering_angle_deg(),
-                        cruise,
-                    });
-                }
+            // Downsample to ~4 Hz.
+            if mono >= acc.last_telem_mono.saturating_add(250_000_000) {
+                acc.last_telem_mono = mono;
+                let gear = cs.get_gear_shifter().map(gear_name).unwrap_or("unknown").to_string();
+                let cruise = cs.get_cruise_state().map(|c| c.get_enabled()).unwrap_or(false);
+                acc.telemetry.push(Telem {
+                    t,
+                    speed: cs.get_v_ego() * 2.236_936, // m/s → mph
+                    gear,
+                    lb: cs.get_left_blinker(),
+                    rb: cs.get_right_blinker(),
+                    brake: cs.get_brake_pressed(),
+                    gas: cs.get_gas_pressed(),
+                    steer: cs.get_steering_angle_deg(),
+                    cruise,
+                });
             }
         }
         Can(_) => {
