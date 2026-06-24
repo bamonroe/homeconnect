@@ -169,3 +169,10 @@ They use synthetic ES256 devices (openssl) and synthetic/real cereal qlogs:
   default is the AMD node; switch in Settings if desired.
 - Deferred (need an athena JSON-RPC command bridge or SSH): delete-on-device,
   queue-resync, server-driven upload defaults.
+- **EV telemetry (SoC/power): not recoverable** from these logs — investigated and
+  parked. openpilot logs the camera/ADAS CAN bus; the BMS/HV traffic is on the
+  powertrain CAN behind the gateway and isn't captured (`CarState.fuelGauge` reads
+  0, and the Hyundai CANFD DBC defines no BMS signal). The instrument cluster msg
+  `0x4D8` *is* logged and may encode the displayed SoC %, but decoding it is
+  reverse-engineering (best attempted against a charging-session capture). `Live`
+  view (WebRTC + remote control) is intentionally out of scope for security.
