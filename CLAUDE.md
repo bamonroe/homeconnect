@@ -50,28 +50,29 @@ macros).
 | File | Responsibility |
 |---|---|
 | `lib.rs` | `build_state()`, the axum `router()`, all route wiring |
-| `main.rs` | bootstrap, tracing, the `create-user` CLI subcommand, spawns workers |
-| `config.rs` | `Config` from `HC_*` env (bind, data dir, public URL, jwt secret, retention) |
+| `main.rs` | bootstrap, tracing, CLI subcommands (`create-user`, `reparse`), spawns workers |
+| `config.rs` | `Config` from `HC_*` env (bind, data dir, public URL, jwt secret, web dir, retention, `vaapi_device`) |
 | `state.rs` | `AppState { config, pool, blobs, athena }` |
 | `db.rs` | SQLite pool (WAL), `migrate!`, `now_millis/now_secs` |
 | `models.rs` | `User`, `Device` `FromRow` structs (booleans are `i64`) |
 | `error.rs` | `AppError` → HTTP; `AppResult<T>` |
 | `auth.rs` | JWT issue/verify (HS512 user, ES256/RS256 device), Argon2, the `Auth` + `AuthUser` extractors |
-| `access.rs` | `can_view_device/dongle/route` authorization helpers |
+| `access.rs` | `can_view_device/dongle/route` + `load_device` authorization helpers |
 | `storage.rs` | filesystem blob store; key = `{dongle}_{ts}--{seg}--{file}`, sharded by sha256 |
 | `ingest.rs` | `connectincoming` PUT handlers; qlog→parse, everything else→register URL |
-| `parse.rs` | qlog decode (capnp) → routes/segments + coords/events/sprite; haversine; route aggregation |
+| `parse.rs` | qlog decode (capnp) → routes/segments + coords/events/telemetry/sprite; haversine; route aggregation; `reparse_all` |
 | `cereal/mod.rs` | generated capnp bindings (built by `build.rs` from `vendor/cereal`) |
 | `athena.rs` | device websocket: `ConnectionManager`, 10s ping, online/offline, stale reaper |
-| `serve.rs` | `connectdata` blob serving with HTTP Range (206); transcode serving |
-| `transcode.rs` | HEVC→H.264 via ffmpeg, disk-cached, semaphore-bounded; `ffprobe` duration |
+| `serve.rs` | `connectdata` blob serving with HTTP Range (206); transcode + audio serving |
+| `transcode.rs` | HEVC→H.264 (VAAPI or CPU, CPU fallback), audio extract, disk-cached, semaphore-bounded; runtime device selection (`list/current/set_device`); `ffprobe` duration |
 | `retention.rs` | periodic prune by age/count/size; `delete_route`; `load/save_policy` |
 | `api/users.rs` | login, `/v1/me`, admin user create + the `create_user_row` CLI helper |
-| `api/v1.rs` | `upload_url(s)`, device info/location/stats, `my_devices`, `routes_segments`, `camera_m3u8`, claim/unpaired |
+| `api/v1.rs` | `upload_url(s)`, device info/location/stats, `my_devices`/`unpaired_devices`/`claim`, `routes_segments`, `camera_m3u8` (qcamera + transcoded cams + audio) |
 | `api/v2.rs` | `pilotauth` (register), `pilotpair` |
-| `api/settings.rs` | admin retention GET/POST + run-now |
+| `api/settings.rs` | admin retention + transcode-device GET/POST + run-now |
+| `api/manage.rs` | per-route download (streamed stored zip) + local delete of selected types |
 | `api/onboard.rs` | serves the host-templated `onboard.sh` |
-| `web/` | Svelte 5 + Vite SPA (Login, Drives, Drive, AddDevice, Settings) |
+| `web/` | Svelte 5 + Vite SPA: Login, Drives, Drive (HUD overlay, resizable panes, camera switch, speed, synced audio), AddDevice, ManageData, Settings |
 
 ## The fixed device contract (must stay exact)
 
@@ -91,7 +92,10 @@ macros).
 - **Athena `GET /ws/v2/{dongle}`** (and `/ws/{dongle}`) — device-JWT; ping every
   10s; pong/any frame refreshes `last_athena_ping` (unix **seconds**) + `online`.
 - Browse (our local user JWT): `/v1/me`, `/v1/me/devices`, `/v1/devices/{d}/routes_segments`,
-  `/connectdata/...` (Range), `/v1/route/{fullname}/{cam}.m3u8`.
+  `/connectdata/...` (Range), `/v1/route/{fullname}/{cam}.m3u8` (qcamera | fcamera | dcamera |
+  ecamera | audio), `/v1/transcode/...` (on-demand H.264), `/v1/audio/...` (extracted track),
+  `/v1/route/{fullname}/download?types=` + `POST .../delete`, and admin `/v1/admin/{retention,transcode}`.
+  Artifacts served from the blob store: `coords.json`, `events.json`, `telemetry.json`, `sprite.jpg`.
 
 ## Gotchas (learned the hard way)
 
@@ -114,13 +118,32 @@ macros).
 - The device **caches its dongle** and won't re-run `pilotauth` when the server
   changes — clear `/data/params/d/DongleId` (what `onboard.sh` does) to force
   re-registration so the new server learns its public key.
+- **Derived-data time base**: each segment's qlog opens with `initData` carrying
+  the **route-start** mono, so `mono - route_base` is already route-relative —
+  anchor coords/events/telemetry to that (do *not* add a per-segment `N*60`
+  offset, which double-counts). This matches the video timeline.
+- **Transcode HLS continuity**: each segment is transcoded independently, so set
+  `-output_ts_offset N*60` per segment or the player sees overlapping 0-based
+  clips and can't seek (reports ~1 min total).
+- **Engagement** = `SelfdriveState.enabled` (NOT `cruiseState.enabled`, the car's
+  stock cruise, which is always off on openpilot-longitudinal cars). The UI derives
+  engage/disengage events from the continuous telemetry `engaged` field (strictly
+  alternating); telemetry emission is gated until the first `SelfdriveState` of a
+  segment so there's no boundary flicker.
+- **VAAPI**: prod compose passes `/dev/dri` + `group_add` (host `render` gid); the
+  image ships mesa + intel VAAPI drivers. Device is runtime-selectable (settings
+  table key `transcode_device`); GPU failures fall back to CPU per-transcode. An
+  entry-level discrete GPU can be slower than a modern iGPU — measure.
+- **After parser changes**, re-run `<bin> reparse` (or `docker compose run --rm app
+  reparse`) to regenerate artifacts for already-uploaded drives.
 
 ## Tests
 
 Integration tests in `tests/` drive the real router in-process (lib+bin split).
 They use synthetic ES256 devices (openssl) and synthetic/real cereal qlogs:
-`m1_e2e`, `m1_athena`, `m2_parse`, `m3_browse`, `m4_spa`, `m5_transcode`,
-`m6_retention`, `m_pairing`, `m_onboard`. Run the full suite before deploying.
+`m1_e2e`, `m1_athena`, `m2_parse` (incl. telemetry), `m3_browse` (incl. audio.m3u8),
+`m4_spa`, `m5_transcode`, `m6_retention`, `m_pairing`, `m_onboard`, `m_manage`
+(zip download + delete), `m_transcode_device`. Run the full suite before deploying.
 
 ## Adding things
 
@@ -128,8 +151,9 @@ They use synthetic ES256 devices (openssl) and synthetic/real cereal qlogs:
   EXISTS …`); it's embedded and runs on next start.
 - **A device/browse endpoint:** handler in the relevant `api/` module → wire in
   `lib.rs::router` → add an integration test.
-- **A new derived artifact** from qlogs: extend `parse::accumulate` + write it to
-  the blob store with a `blob_key(...)`; serve via the existing `connectdata` path.
+- **A new derived artifact** from qlogs: extend `parse::accumulate` + write it in
+  `parse_and_store` with a `blob_key(...)` (like `telemetry.json`); serve via the
+  existing `connectdata` path; then `reparse` to backfill.
 
 ## Live deployment notes (this instance)
 
@@ -140,3 +164,8 @@ They use synthetic ES256 devices (openssl) and synthetic/real cereal qlogs:
 - Onboarding for additional/less-technical users: the `onboard.sh` one-liner +
   one-click **Claim** (we deliberately did NOT bake an SSH client / GitHub-key
   flow into homeconnect — too much blast radius for the convenience).
+- GPUs here: `renderD128` = Intel HD 530 (iGPU, fastest VAAPI ~2.5s/segment),
+  `renderD129` = AMD RX 550 (~13s, slower — entry-level encoder). `HC_VAAPI_DEVICE`
+  default is the AMD node; switch in Settings if desired.
+- Deferred (need an athena JSON-RPC command bridge or SSH): delete-on-device,
+  queue-resync, server-driven upload defaults.

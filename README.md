@@ -17,12 +17,19 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
   websocket, `upload_url`, `connectincoming`, …). Point the device at this server
   and it registers, stays online, and uploads.
 - **Drive browsing** — trips parsed from `qlog`s into routes/segments with GPS
-  path, mileage, engagement events, and thumbnail sprites.
-- **In-browser playback** — qcamera HLS (with audio) plus **on-demand HEVC→H.264
-  transcoding** so the **road, wide, and driver** full-res cameras all play in a
-  normal browser (cached after first view).
-- **Map + synced video** — MapLibre route path with a marker that tracks video
-  playback; clickable engage/disengage events.
+  path, mileage, engage/disengage events, and thumbnail sprites.
+- **In-browser playback** — qcamera HLS plus **on-demand HEVC→H.264 transcoding**
+  so the **road, wide, and driver** full-res cameras all play in a normal browser
+  (cached after first view). Optional **GPU acceleration** (VAAPI) with a
+  CPU fallback, and a runtime **device selector** (CPU / any detected GPU).
+- **Telemetry overlay** — a HUD synced to playback shows **speed, gear, turn
+  signals, brake, and openpilot engagement** (parsed from `CarState`).
+- **Map + synced video** — MapLibre route path with a marker that tracks playback;
+  resizable panes; 0.5×–8× playback speed.
+- **Split audio** — the qcamera mic track is extracted to a separate file and
+  played in sync over the (silent) full-res/driver cameras, without re-muxing.
+- **Manage data** — per drive, download selected file types as a (stored) zip, or
+  delete them off the server.
 - **Local accounts** — username/password (Argon2), server-issued JWTs. No OAuth.
 - **Retention** — auto-prune by age / per-device count / total size, with an admin
   settings page.
@@ -44,11 +51,11 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
 - **SQLite** via `sqlx` (runtime queries; migrations embedded in the binary).
 - **Filesystem blob store** under the data dir — replaces an object store entirely.
 - **Cereal/capnp** qlog parsing (schemas vendored under `vendor/cereal`).
-- **ffmpeg** (CLI) for HEVC→H.264 transcoding.
+- **ffmpeg** (CLI) for HEVC→H.264 transcoding and audio extraction (VAAPI or CPU).
 - **Svelte + Vite** SPA (`web/`), MapLibre for maps, hls.js for video.
 
 Stack: axum 0.8, tokio, sqlx 0.9 (SQLite), jsonwebtoken 10, argon2, capnp 0.26,
-zstd/bzip2, image; Svelte 5 + Vite + MapLibre + hls.js.
+zstd/bzip2, image, zip; Svelte 5 + Vite + MapLibre + hls.js.
 
 ## Quick start
 
@@ -97,11 +104,29 @@ All via env (`.env` for secrets):
 | `HC_PUBLIC_URL` | `http://localhost:8099` | base URL baked into media/upload/onboard URLs |
 | `HC_JWT_SECRET` | dev placeholder | **set this** — base64 HMAC secret for user JWTs |
 | `HC_WEB_DIR` | `./web/dist` | built SPA directory |
+| `HC_VAAPI_DEVICE` | (unset → CPU) | default DRM render node for GPU transcoding, e.g. `/dev/dri/renderD128` |
 | `HC_RETAIN_DAYS` | `30` | keep drives newer than N days (0 = unlimited) |
 | `HC_RETAIN_DRIVES` | `30` | max drives per device (0 = unlimited) |
 | `HC_RETAIN_GB` | `100` | max total storage GB (0 = unlimited) |
 
-Retention defaults are overridable at runtime from the admin **Settings** page.
+Retention and the transcode device are overridable at runtime from the admin
+**Settings** page (the env values are just defaults).
+
+### GPU transcoding (optional)
+
+To offload full-res/driver transcoding to a GPU via VAAPI, give the container the
+DRM devices and the host `render` group, then point `HC_VAAPI_DEVICE` at a render
+node (see `docker-compose.yml`):
+
+```yaml
+    devices: [ "/dev/dri:/dev/dri" ]
+    group_add: [ "989" ]   # host 'render' group gid (check: getent group render)
+```
+
+The image ships both the Mesa (AMD) and Intel VAAPI drivers; the **Settings →
+Transcoding device** dropdown lists every detected GPU plus CPU, and any GPU
+failure falls back to CPU per-transcode. Note that a low-end discrete card can be
+*slower* than a modern iGPU's fixed-function encoder — pick by measuring.
 
 ## Development
 

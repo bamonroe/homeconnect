@@ -6,8 +6,9 @@
 #   docker compose -f docker-compose.dev.yml exec app cargo test
 #   docker compose -f docker-compose.dev.yml exec --workdir /work/web app npm run build
 #
-# The repo is bind-mounted at /work; tests use their own temp dirs, so this
-# shares /data with prod harmlessly (it doesn't run the server).
+# The repo is bind-mounted at /work; tests use their own temp dirs. This builds
+# and tests only — it does not run the server (prod owns /data and the port), so
+# no data mount or HC_* env here.
 #
 # Separate project name so dev and prod don't disturb each other's containers.
 name: homeconnect-dev
@@ -23,8 +24,4 @@ services:
     working_dir: /work
     volumes:
       - .:/work
-      - /data/storage/homeconnect:/data
-    environment:
-      HC_DATA_DIR: "/data"
-      HC_PUBLIC_URL: "http://homeconnect.bam"
     command: ["sleep", "infinity"]

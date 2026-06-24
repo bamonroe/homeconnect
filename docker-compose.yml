@@ -31,8 +31,8 @@ services:
     env_file:
       - .env
     environment:
-      HC_BIND: "0.0.0.0:8099"
-      HC_DATA_DIR: "/data"
+      # HC_BIND / HC_DATA_DIR / HC_WEB_DIR are baked into the image (Dockerfile).
+      # GPU transcode device (not in the image); switchable at runtime in Settings.
       HC_VAAPI_DEVICE: "/dev/dri/renderD129"   # AMD Radeon RX 550 (Intel iGPU = renderD128)
     ports:
       - "127.0.0.1:8099:8099"
