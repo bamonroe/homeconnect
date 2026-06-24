@@ -450,6 +450,9 @@ pub async fn camera_m3u8(
                 .then(|| format!("{public}/v1/transcode/{dongle}/{ts}/{}/dcamera.ts", s.number)),
             "ecamera" => (!s.ecam_url.is_empty())
                 .then(|| format!("{public}/v1/transcode/{dongle}/{ts}/{}/ecamera.ts", s.number)),
+            // Audio is extracted from qcamera (present whenever qcam is).
+            "audio" => (!s.qcam_url.is_empty())
+                .then(|| format!("{public}/v1/audio/{dongle}/{ts}/{}/audio.ts", s.number)),
             _ => None,
         }
     };

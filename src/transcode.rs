@@ -260,6 +260,55 @@ async fn run_ffmpeg(args: Vec<String>) -> bool {
     )
 }
 
+/// Ensure the per-segment audio track (extracted from qcamera, AAC copied into
+/// MPEG-TS, timeline-aligned) exists, returning its cached path. This is the
+/// "separate audio file" used for joint playback over the silent cameras and
+/// for download — the original qcamera is untouched.
+pub async fn ensure_audio(
+    state: &AppState,
+    dongle: &str,
+    ts: &str,
+    seg: i64,
+) -> AppResult<PathBuf> {
+    let out = state
+        .config
+        .transcode_dir()
+        .join(format!("{dongle}_{ts}--{seg}--audio.ts"));
+    if tokio::fs::try_exists(&out).await.unwrap_or(false) {
+        return Ok(out);
+    }
+    let src_key = blob_key(dongle, ts, seg, "qcamera.ts");
+    let src = state.blobs.path_for(&src_key);
+    if !tokio::fs::try_exists(&src).await.unwrap_or(false) {
+        return Err(AppError::NotFound("no qcamera for segment".into()));
+    }
+    if let Some(parent) = out.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| AppError::Other(e.into()))?;
+    }
+    let _permit = sem().acquire().await.expect("semaphore");
+    if tokio::fs::try_exists(&out).await.unwrap_or(false) {
+        return Ok(out);
+    }
+    let src_s = src.to_string_lossy().to_string();
+    let tmp = out.with_extension("tmp.ts");
+    let tmp_s = tmp.to_string_lossy().to_string();
+    let offset = (seg.max(0) * SEGMENT_SECS).to_string();
+    let args: Vec<String> = [
+        "-nostdin", "-y", "-i", &src_s, "-vn", "-c:a", "copy",
+        "-output_ts_offset", &offset, "-muxdelay", "0", "-f", "mpegts", &tmp_s,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    if run_ffmpeg(args).await {
+        tokio::fs::rename(&tmp, &out).await.map_err(|e| AppError::Other(e.into()))?;
+        Ok(out)
+    } else {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        Err(AppError::Other(anyhow::anyhow!("audio extract failed")))
+    }
+}
+
 /// Probe a media file's duration in seconds (best-effort).
 pub async fn probe_duration(path: &std::path::Path) -> Option<f64> {
     let out = Command::new("ffprobe")

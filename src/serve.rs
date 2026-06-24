@@ -141,6 +141,29 @@ pub async fn transcode(
     serve_file(&path, "video/mp2t", &headers).await
 }
 
+/// GET /v1/audio/:dongle/:timestamp/:segment/:file — extracted audio track.
+pub async fn audio(
+    State(state): State<AppState>,
+    Path((dongle, timestamp, segment, _file)): Path<(String, String, i64, String)>,
+    auth: Option<Auth>,
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    let fullname = format!("{dongle}|{timestamp}");
+    let is_public: Option<(i64,)> =
+        sqlx::query_as("SELECT is_public FROM routes WHERE fullname = ?")
+            .bind(&fullname)
+            .fetch_optional(&state.pool)
+            .await?;
+    if !matches!(is_public, Some((1,))) {
+        let auth = auth.ok_or_else(|| AppError::Unauthorized("login required".into()))?;
+        if !crate::access::can_view_route(&state, &auth, &dongle).await? {
+            return Err(AppError::Forbidden("not authorized for this route".into()));
+        }
+    }
+    let path = crate::transcode::ensure_audio(&state, &dongle, &timestamp, segment).await?;
+    serve_file(&path, "video/mp2t", &headers).await
+}
+
 /// Stream a file from disk with HTTP Range support (206 when requested).
 async fn serve_file(path: &std::path::Path, ct: &str, headers: &HeaderMap) -> AppResult<Response> {
     let mut f = match tokio::fs::File::open(path).await {

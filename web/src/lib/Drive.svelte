@@ -151,6 +151,36 @@
     }
   }
 
+  // Separate audio track (extracted from qcamera) played in sync with the
+  // (muted) video — so the silent driver/full-res cameras have sound without
+  // muxing audio into them. Continuous timeline matches the video.
+  function loadAudio() {
+    const url = api.camM3u8(route.fullname, 'audio') + `?sig=${token}`;
+    if (audioHls) { audioHls.destroy(); audioHls = null; }
+    if (Hls.isSupported()) {
+      audioHls = new Hls({ fragLoadingTimeOut: 90000 });
+      audioHls.loadSource(url);
+      audioHls.attachMedia(audioEl);
+    } else if (audioEl.canPlayType('application/vnd.apple.mpegurl')) {
+      audioEl.src = url;
+    }
+    audioEl.playbackRate = rate;
+  }
+
+  function wireAudioSync() {
+    const resync = () => { if (audioEl) audioEl.currentTime = videoEl.currentTime; };
+    videoEl.addEventListener('play', () => { resync(); audioEl?.play().catch(() => {}); });
+    videoEl.addEventListener('pause', () => audioEl?.pause());
+    videoEl.addEventListener('seeking', resync);
+    videoEl.addEventListener('ratechange', () => { if (audioEl) audioEl.playbackRate = videoEl.playbackRate; });
+    // Drift correction during playback.
+    videoEl.addEventListener('timeupdate', () => {
+      if (audioEl && !audioEl.paused && Math.abs(audioEl.currentTime - videoEl.currentTime) > 0.3) {
+        audioEl.currentTime = videoEl.currentTime;
+      }
+    });
+  }
+
   function switchCam(id) {
     const at = videoEl?.currentTime || 0;
     cam = id;
@@ -191,10 +221,12 @@
     map = new maplibregl.Map({ container: mapEl, style: STYLE, center: [0, 0], zoom: 1 });
     map.on('load', () => { mapReady = true; map.resize(); maybeDraw(); });
     videoEl.addEventListener('timeupdate', () => syncMarker(videoEl.currentTime));
+    wireAudioSync();
     try {
       await loadArtifacts();
       maybeDraw();
       loadVideo();
+      loadAudio();
     } catch (e) {
       error = e.message;
     }
@@ -202,6 +234,7 @@
 
   onDestroy(() => {
     hls?.destroy();
+    audioHls?.destroy();
     map?.remove();
   });
 </script>

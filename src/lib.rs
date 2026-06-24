@@ -82,6 +82,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices/{dongle_id}/routes_segments", get(api::v1::routes_segments))
         .route("/v1/route/{fullname}/{cam}", get(api::v1::camera_m3u8))
         .route("/v1/transcode/{dongle}/{timestamp}/{segment}/{file}", get(serve::transcode))
+        .route("/v1/audio/{dongle}/{timestamp}/{segment}/{file}", get(serve::audio))
         // blob serving (Range-capable): 5-part (with type) and 4-part variants
         .route("/connectdata/{type}/{dongle}/{timestamp}/{segment}/{file}", get(serve::connectdata))
         .route("/connectdata/{dongle}/{timestamp}/{segment}/{file}", get(serve::connectdata_notype))

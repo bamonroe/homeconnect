@@ -172,6 +172,22 @@ async fn user_browses_routes_playlist_and_blobs() {
     assert!(m3u8.contains("/connectdata/qcam/dongle0/"));
     assert!(m3u8.contains("qcamera.ts?sig="));
 
+    // audio.m3u8 → separate audio track, points at the /v1/audio endpoint.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/route/{dongle}|{ts}/audio.m3u8"))
+                .header("Authorization", &bearer)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let am3u8 = body_text(resp).await;
+    assert!(am3u8.contains("/v1/audio/dongle0/") && am3u8.contains("audio.ts?sig="));
+
     // Blob download with Range → 206 partial.
     let resp = app
         .clone()
