@@ -4,8 +4,10 @@
   import 'maplibre-gl/dist/maplibre-gl.css';
   import Hls from 'hls.js';
   import { api, getToken } from './api.js';
+  import ManageData from './ManageData.svelte';
 
   let { route, onback } = $props();
+  let showManage = $state(false);
 
   let mapEl;
   let videoEl;
@@ -244,7 +246,15 @@
     <button class="ghost" onclick={onback}>← Drives</button>
     <div class="title">{new Date(route.start_time_utc_millis).toLocaleString()}</div>
     <div class="muted">{route.length ? route.length.toFixed(1) + ' mi' : ''} · {route.platform || ''}</div>
+    <button class="ghost manage" onclick={() => (showManage = true)}>Manage data</button>
   </div>
+
+  {#if showManage}
+    <ManageData
+      {route}
+      onclose={() => (showManage = false)}
+      onchanged={() => { showManage = false; onback(); }} />
+  {/if}
 
   {#if error}<div class="error pad">{error}</div>{/if}
 
@@ -306,6 +316,7 @@
     border-bottom: 1px solid var(--border); background: var(--panel);
   }
   .bar .title { font-weight: 600; }
+  .bar .manage { margin-left: auto; }
   .pad { padding: 10px 16px; }
   .grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 380px; }
   .map { height: 100%; }

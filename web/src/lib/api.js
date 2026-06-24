@@ -93,4 +93,9 @@ export const api = {
   // admin: transcode device
   transcode: () => req('GET', '/v1/admin/transcode'),
   setTranscode: (device) => req('POST', '/v1/admin/transcode', { device }),
+  // manage data
+  downloadUrl: (fullname, types) =>
+    `/v1/route/${encodeURIComponent(fullname)}/download?types=${types.join(',')}&sig=${getToken()}`,
+  deleteData: (fullname, types) =>
+    req('POST', `/v1/route/${encodeURIComponent(fullname)}/delete`, { types }),
 };

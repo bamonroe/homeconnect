@@ -1,3 +1,4 @@
+pub mod manage;
 pub mod onboard;
 pub mod settings;
 pub mod users;
