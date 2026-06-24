@@ -113,6 +113,9 @@ async fn probe_vaapi(dev: &str) -> (String, bool) {
 /// Comma cameras record at 20 fps; raw HEVC carries no frame rate, so we set it
 /// on the input.
 const FPS: &str = "20";
+/// Nominal seconds per route segment (used to offset each transcode's
+/// timestamps so the concatenated HLS stream is continuous).
+const SEGMENT_SECS: i64 = 60;
 /// Hard cap so a corrupt/huge input can't wedge a worker forever.
 const TRANSCODE_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -179,20 +182,25 @@ pub async fn ensure_transcode(
     let src = src.to_string_lossy().to_string();
     let tmp = out.with_extension("tmp.ts");
     let tmp_s = tmp.to_string_lossy().to_string();
+    // Each segment is transcoded independently (PTS would start at 0), so shift
+    // its timestamps to its position in the route (~60s per segment). This makes
+    // the concatenated HLS stream continuous so the player reports the full
+    // duration and seeking lands on the right segment.
+    let offset = (seg.max(0) * SEGMENT_SECS).to_string();
 
     // Prefer GPU (VAAPI) if selected; fall back to CPU on any failure so a
     // GPU hiccup never breaks playback.
     let device = current_device(state).await;
     let mut ok = false;
     if let Some(dev) = &device {
-        ok = run_ffmpeg(vaapi_args(dev, &src, &tmp_s)).await;
+        ok = run_ffmpeg(vaapi_args(dev, &src, &tmp_s, &offset)).await;
         if !ok {
             tracing::warn!(%cam, "VAAPI transcode failed; falling back to CPU");
             let _ = tokio::fs::remove_file(&tmp).await;
         }
     }
     if !ok {
-        ok = run_ffmpeg(cpu_args(&src, &tmp_s)).await;
+        ok = run_ffmpeg(cpu_args(&src, &tmp_s, &offset)).await;
     }
 
     if ok {
@@ -207,13 +215,15 @@ pub async fn ensure_transcode(
 }
 
 /// GPU pipeline: decode HEVC + encode H.264 on the VAAPI device.
-fn vaapi_args(dev: &str, src: &str, out: &str) -> Vec<String> {
+fn vaapi_args(dev: &str, src: &str, out: &str, ts_offset: &str) -> Vec<String> {
     [
         "-nostdin", "-y",
         "-hwaccel", "vaapi", "-hwaccel_device", dev, "-hwaccel_output_format", "vaapi",
         "-r", FPS, "-f", "hevc", "-i", src,
         "-vf", "scale_vaapi=format=nv12",
-        "-c:v", "h264_vaapi", "-qp", "24", "-an", "-f", "mpegts", out,
+        "-c:v", "h264_vaapi", "-qp", "24", "-an",
+        "-output_ts_offset", ts_offset, "-muxdelay", "0",
+        "-f", "mpegts", out,
     ]
     .iter()
     .map(|s| s.to_string())
@@ -221,11 +231,12 @@ fn vaapi_args(dev: &str, src: &str, out: &str) -> Vec<String> {
 }
 
 /// CPU pipeline (libx264, ultrafast).
-fn cpu_args(src: &str, out: &str) -> Vec<String> {
+fn cpu_args(src: &str, out: &str, ts_offset: &str) -> Vec<String> {
     [
         "-nostdin", "-y", "-fflags", "+genpts", "-r", FPS, "-f", "hevc", "-i", src,
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-        "-pix_fmt", "yuv420p", "-an", "-f", "mpegts", out,
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p", "-an",
+        "-output_ts_offset", ts_offset, "-muxdelay", "0",
+        "-f", "mpegts", out,
     ]
     .iter()
     .map(|s| s.to_string())
