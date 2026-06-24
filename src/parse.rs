@@ -47,8 +47,9 @@ struct Telem {
     rb: bool,     // right blinker
     brake: bool,  // brake pressed
     gas: bool,    // gas pressed
-    steer: f32,   // steering angle (deg)
-    cruise: bool, // openpilot/cruise engaged
+    steer: f32,    // steering angle (deg)
+    engaged: bool, // openpilot actively engaged (SelfdriveState.enabled)
+    cruise: bool,  // car cruise control on (cruiseState.enabled)
 }
 
 fn gear_name(g: GearShifter) -> &'static str {
@@ -143,6 +144,7 @@ struct Accum {
     device_type: String,
     has_can: bool,
     has_gps: bool,
+    cur_engaged: bool, // latest openpilot-engaged state (for telemetry samples)
     // selfdrive state collapsing
     last_state: Option<(bool, i32)>,
 }
@@ -303,6 +305,7 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
         }
         SelfdriveState(Ok(ss)) => {
             let enabled = ss.get_enabled();
+            acc.cur_engaged = enabled; // live state for the telemetry overlay
             let engageable = ss.get_engageable();
             let mut alert_status = match ss.get_alert_status() {
                 Ok(selfdrive_state::AlertStatus::Normal) => 0,
@@ -352,6 +355,7 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
                     brake: cs.get_brake_pressed(),
                     gas: cs.get_gas_pressed(),
                     steer: cs.get_steering_angle_deg(),
+                    engaged: acc.cur_engaged,
                     cruise,
                 });
             }

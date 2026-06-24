@@ -315,7 +315,7 @@
             <div class="spd"><span class="n">{Math.round(tnow.speed)}</span><span class="u">mph</span></div>
             <div class="chips">
               <span class="chip">{tnow.gear?.toUpperCase() ?? '—'}</span>
-              {#if tnow.cruise}<span class="chip on">openpilot</span>{/if}
+              {#if tnow.engaged}<span class="chip on">openpilot</span>{/if}
               {#if tnow.brake}<span class="chip brk">brake</span>{/if}
               <span class="arrow" class:lit={tnow.lb}>◀</span>
               <span class="arrow" class:lit={tnow.rb}>▶</span>
