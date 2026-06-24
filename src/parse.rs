@@ -50,6 +50,8 @@ struct Telem {
     steer: f32,    // steering angle (deg)
     engaged: bool, // openpilot actively engaged (SelfdriveState.enabled)
     cruise: bool,  // car cruise control on (cruiseState.enabled)
+    soc: f32,      // state of charge / fuel level, percent (fuelGauge * 100)
+    charging: bool,
 }
 
 fn gear_name(g: GearShifter) -> &'static str {
@@ -361,6 +363,8 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
                     steer: cs.get_steering_angle_deg(),
                     engaged: acc.cur_engaged,
                     cruise,
+                    soc: cs.get_fuel_gauge() * 100.0,
+                    charging: cs.get_charging(),
                 });
             }
         }
