@@ -18,8 +18,20 @@
   let audioHls;
 
   let coords = $state([]); // {t, lat, lng, speed}
-  let events = $state([]);
-  let telemetry = $state([]); // {t, speed, gear, lb, rb, brake, gas, steer, cruise}
+  let telemetry = $state([]); // {t, speed, gear, lb, rb, brake, gas, steer, engaged}
+  // Engage/disengage events derived from the continuous telemetry — only on a
+  // real transition, so no duplicate or segment-boundary artifacts.
+  let engageEvents = $derived.by(() => {
+    const out = [];
+    let prev = false;
+    for (const s of telemetry) {
+      if (!!s.engaged !== prev) {
+        prev = !!s.engaged;
+        out.push({ t: s.t, engaged: prev });
+      }
+    }
+    return out;
+  });
   let error = $state('');
   let curT = $state(0);
   let tnow = $state(null); // current telemetry sample
@@ -102,10 +114,8 @@
   async function loadArtifacts() {
     const nums = route.segment_numbers?.length ? route.segment_numbers : [0];
     const coordChunks = await Promise.all(nums.map((n) => fetchJson(seg(n, 'coords.json'))));
-    const eventChunks = await Promise.all(nums.map((n) => fetchJson(seg(n, 'events.json'))));
     const telemChunks = await Promise.all(nums.map((n) => fetchJson(seg(n, 'telemetry.json'))));
     coords = coordChunks.filter(Boolean).flat();
-    events = eventChunks.filter(Boolean).flat();
     telemetry = telemChunks.filter(Boolean).flat();
   }
 
@@ -333,14 +343,14 @@
       </div>
       <div class="row-resizer" onpointerdown={startRowResize} title="Drag to resize"></div>
       <div class="events">
-        <div class="ev-head">Events</div>
-        {#if !events.length}
+        <div class="ev-head">Engagements</div>
+        {#if !engageEvents.length}
           <div class="muted small">No engagement events.</div>
         {:else}
-          {#each events as e}
-            <button class="ev" onclick={() => seek(e.route_offset_millis)}>
-              <span class="badge" class:on={e.data?.enabled}>{e.data?.enabled ? 'engaged' : 'disengaged'}</span>
-              <span class="muted small">{fmtT((e.route_offset_millis || 0) / 1000)}</span>
+          {#each engageEvents as e}
+            <button class="ev" onclick={() => seek(e.t * 1000)}>
+              <span class="badge" class:on={e.engaged}>{e.engaged ? 'engaged' : 'disengaged'}</span>
+              <span class="muted small">{fmtT(e.t)}</span>
             </button>
           {/each}
         {/if}

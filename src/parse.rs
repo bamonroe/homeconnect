@@ -144,7 +144,8 @@ struct Accum {
     device_type: String,
     has_can: bool,
     has_gps: bool,
-    cur_engaged: bool, // latest openpilot-engaged state (for telemetry samples)
+    cur_engaged: bool,    // latest openpilot-engaged state (for telemetry samples)
+    seen_selfdrive: bool, // have we read engagement state yet this segment?
     // selfdrive state collapsing
     last_state: Option<(bool, i32)>,
 }
@@ -306,6 +307,7 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
         SelfdriveState(Ok(ss)) => {
             let enabled = ss.get_enabled();
             acc.cur_engaged = enabled; // live state for the telemetry overlay
+            acc.seen_selfdrive = true;
             let engageable = ss.get_engageable();
             let mut alert_status = match ss.get_alert_status() {
                 Ok(selfdrive_state::AlertStatus::Normal) => 0,
@@ -341,8 +343,10 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
             }
         }
         CarState(Ok(cs)) => {
-            // Downsample to ~4 Hz.
-            if mono >= acc.last_telem_mono.saturating_add(250_000_000) {
+            // Downsample to ~4 Hz. Wait until we've seen the engagement state in
+            // this segment so the `engaged` field is never a stale default
+            // (avoids a 1-sample disengage flicker at each segment boundary).
+            if acc.seen_selfdrive && mono >= acc.last_telem_mono.saturating_add(250_000_000) {
                 acc.last_telem_mono = mono;
                 let gear = cs.get_gear_shifter().map(gear_name).unwrap_or("unknown").to_string();
                 let cruise = cs.get_cruise_state().map(|c| c.get_enabled()).unwrap_or(false);
