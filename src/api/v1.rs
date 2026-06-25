@@ -618,6 +618,17 @@ pub async fn camera_m3u8(
         .into_response())
 }
 
+/// GET /v1/movies/queue — background movie-encoder progress, for the header badge
+/// (mirrors /v1/sync/queue). `building` = movies left in the current sweep,
+/// `current` = a label for the one encoding now (null when idle).
+pub async fn movie_queue(
+    State(state): State<AppState>,
+    AuthUser(_user): AuthUser,
+) -> AppResult<Json<Value>> {
+    let (building, current) = state.movie_queue.stats().await;
+    Ok(Json(json!({ "building": building, "current": current })))
+}
+
 /// GET /v1/route/:fullname/movies — which cameras have a ready stitched movie for
 /// this drive (+ size/duration), so the UI can play it natively and offer it as a
 /// download. Owner/admin only.

@@ -12,16 +12,66 @@
 //! full-res CRF (≈4 MB/min — ~8× smaller than the raw HEVC) via the same VAAPI/CPU
 //! selection as the on-demand transcode, CPU as the fallback.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::process::Command;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::transcode;
+
+/// Live progress of the background movie builder, surfaced as a header badge like
+/// the sync counter. `pending` is how many movies the current sweep still has to
+/// build (it decrements as each finishes); `current` is a label for the one
+/// encoding right now. Idle ⇒ pending 0, current None.
+#[derive(Clone, Default)]
+pub struct MovieQueue {
+    inner: Arc<Mutex<MovieQ>>,
+}
+
+#[derive(Default)]
+struct MovieQ {
+    pending: usize,
+    current: Option<String>,
+}
+
+impl MovieQueue {
+    async fn set_pending(&self, n: usize) {
+        self.inner.lock().await.pending = n;
+    }
+    async fn begin(&self, label: String) {
+        self.inner.lock().await.current = Some(label);
+    }
+    async fn finish(&self) {
+        let mut s = self.inner.lock().await;
+        s.current = None;
+        s.pending = s.pending.saturating_sub(1);
+    }
+    async fn clear(&self) {
+        let mut s = self.inner.lock().await;
+        s.pending = 0;
+        s.current = None;
+    }
+    /// (pending count, current label) for the API/badge.
+    pub async fn stats(&self) -> (usize, Option<String>) {
+        let s = self.inner.lock().await;
+        (s.pending, s.current.clone())
+    }
+}
+
+/// Friendly camera name for the progress label.
+fn cam_label(cam: &str) -> &'static str {
+    match cam {
+        "qcamera" => "Road",
+        "fcamera" => "Road HD",
+        "dcamera" => "Driver",
+        "ecamera" => "Wide",
+        _ => "camera",
+    }
+}
 
 /// Cameras we build movies for. qcamera already carries audio + is H.264, so its
 /// movie is a stream copy; the HEVC cameras are encoded and get qcamera's audio.
@@ -316,6 +366,9 @@ pub async fn sweep(state: &AppState) {
             .map(|(f, c, n)| ((f, c), n))
             .collect();
 
+    // First pass: gather every movie that needs (re)building, so the badge can
+    // show an accurate remaining count before any slow encode starts.
+    let mut todo: Vec<(String, String, String, &'static str)> = Vec::new(); // (fullname, dongle, ts, cam)
     for (fullname, dongle) in routes {
         let Some((_, ts)) = fullname.split_once('|') else { continue };
         let ts = ts.to_string();
@@ -340,11 +393,25 @@ pub async fn sweep(state: &AppState) {
             if fresh {
                 continue;
             }
-            if let Err(e) = build(state, &dongle, &ts, cam).await {
-                tracing::warn!(%fullname, %cam, "movie build: {e}");
-            }
+            todo.push((fullname.clone(), dongle.clone(), ts.clone(), cam));
         }
     }
+
+    if todo.is_empty() {
+        return;
+    }
+    // Second pass: build sequentially (the encode semaphore serializes anyway),
+    // updating the progress counter so the header badge reflects the queue.
+    state.movie_queue.set_pending(todo.len()).await;
+    for (fullname, dongle, ts, cam) in todo {
+        let short = ts.split("--").next().unwrap_or(&ts);
+        state.movie_queue.begin(format!("{} · {}", cam_label(cam), short)).await;
+        if let Err(e) = build(state, &dongle, &ts, cam).await {
+            tracing::warn!(%fullname, %cam, "movie build: {e}");
+        }
+        state.movie_queue.finish().await;
+    }
+    state.movie_queue.clear().await;
 }
 
 /// Delete a route's movie for one camera (blob + freshness row). Used when its

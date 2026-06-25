@@ -45,6 +45,7 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         blobs,
         athena: athena::ConnectionManager::default(),
         sync_queue: sync_queue::SyncQueue::default(),
+        movie_queue: movie::MovieQueue::default(),
     })
 }
 
@@ -86,6 +87,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices/{dongle_id}/sync", post(api::devsync::sync_now))
         .route("/v1/devices/{dongle_id}/params", get(api::device_params::get_params).post(api::device_params::set_param))
         .route("/v1/sync/queue", get(api::devsync::queue_stats))
+        .route("/v1/movies/queue", get(api::v1::movie_queue))
         .route("/v1/route/{fullname}/sync", get(api::devsync::get_route_sync).post(api::devsync::set_route_sync))
         // admin: retention policy
         .route("/v1/admin/retention", get(api::settings::get_retention).post(api::settings::set_retention))

@@ -16,13 +16,15 @@
   let pendingPair = new URLSearchParams(location.search).get('pair');
   let banner = $state('');
 
-  // Sync queue counter, polled while logged in.
+  // Sync + encoding queue counters, polled while logged in.
   let queue = $state({ drives: 0, files: 0 });
+  let enc = $state({ building: 0, current: null });
   $effect(() => {
     if (!token) return;
     let stop = false;
     const tick = async () => {
       try { queue = await api.syncQueue(); } catch {}
+      try { enc = await api.movieQueue(); } catch {}
     };
     tick();
     // Poll faster while there's work, slower when idle.
@@ -76,6 +78,12 @@
             <span class="ok-dot"></span> Synced
           {/if}
         </span>
+        {#if enc.building > 0}
+          <span class="syncing active" title={enc.current ? `Encoding ${enc.current}` : 'Encoding movies'}>
+            <span class="spin">⟳</span>
+            Encoding {enc.building} movie{enc.building === 1 ? '' : 's'}
+          </span>
+        {/if}
         <button class="ghost" class:active={view === 'drives'} onclick={goDrives}>Drives</button>
         <button class="ghost" class:active={view === 'stats'} onclick={() => (view = 'stats')}>Stats</button>
         {#if user?.is_admin}
