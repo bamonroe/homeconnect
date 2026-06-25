@@ -31,10 +31,17 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
   so the **road, wide, and driver** full-res cameras all play in a normal browser
   (cached after first view). Optional **GPU acceleration** (VAAPI) with a
   CPU fallback, and a runtime **device selector** (CPU / any detected GPU).
-- **Telemetry overlay** — a HUD synced to playback shows **speed, gear, turn
-  signals, brake, and openpilot engagement** (parsed from `CarState`).
-- **Map + synced video** — MapLibre route path with a marker that tracks playback;
-  resizable panes; 0.5×–8× playback speed.
+- **Telemetry HUD + model overlay** — a HUD synced to playback shows **speed, gear,
+  turn signals, brake, and openpilot engagement** — distinguishing **sunnypilot MADS
+  lateral (steering) vs longitudinal (cruise)** assist. A calibrated **model overlay**
+  draws openpilot's path / lanes / lead *on* the road video, plus a **top-down**
+  bird's-eye view, both from `modelV2`.
+- **Trip stats & autonomy** — per-drive and all-time **Stats** page: autonomy %,
+  disengagements, avg/max speed, drive time, device health, and an all-drives map
+  colored by autonomy.
+- **Map + movable panes** — MapLibre route path with a marker that tracks playback;
+  the video / map / timeline / top-down / events panes are **draggable, resizable
+  tiles** (layout saved); 0.5×–8× playback speed and an audio **volume boost**.
 - **Split audio** — the qcamera mic track is extracted to a separate file and
   played in sync over the (silent) full-res/driver cameras, without re-muxing.
 - **Stitched movies** — once a drive is fully synced, each camera's one-minute
@@ -47,8 +54,9 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
   the device's storage. Auto-prune (Settings) can delete each device copy right
   after it's safely pulled here — it only ever removes files the server already holds.
 - **Device settings** — read and change a curated, safe allowlist of openpilot
-  params (record driver cam / mic, experimental mode, following distance, …) from
-  the browser, written to the device over SSH — a start on replacing sunnylink.
+  params (record driver cam / mic, experimental mode, following distance, …) and
+  **switch the sunnypilot driving model**, from the browser over SSH — a start on
+  replacing sunnylink.
 - **Local accounts** — username/password (Argon2), server-issued JWTs. No OAuth.
 - **Retention** — auto-prune by age / per-device count / total size, with an admin
   settings page.
@@ -60,7 +68,7 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
 ```
             ┌──────────────────────── homeconnect (one binary) ───────────────────────┐
  comma ──►  │ axum HTTP/WS  ·  SQLite (WAL, sqlx)  ·  filesystem blob store            │
- browser ►  │ background workers: athena keepalive · qlog parser · retention · ffmpeg  │
+ browser ►  │ workers: athena keepalive · SSH drive-sync · qlog parser · movie encoder · retention │
             │ serves the built Svelte SPA at /                                          │
             └───────────────────────────────────────────────────────────────────────────┘
 ```
@@ -174,7 +182,7 @@ More can be mined from the qlog data we already collect. Rough priority:
 
 **Flashy / bigger projects**
 - [x] **Top-down model view** — `modelV2` path / lane lines / road edges / lead in a bird's-eye canvas synced to playback (parsed from the rlog → `model.json`).
-- [ ] openpilot-style **overlay on the road camera** — same data drawn *on* the video. Deferred: the comma-three road cam is fisheye, so accurate projection is non-trivial (openpilot's own single-focal intrinsic is "probably wrong").
+- [x] openpilot-style **overlay on the road camera** — the same data drawn *on* the video, via a one-time per-camera calibration (pinhole + equidistant-fisheye intrinsics, saved and reused for every drive).
 - [x] **All-drives heatmap** — every trip's GPS on one map (Stats page).
 
 **Intentionally out of scope**

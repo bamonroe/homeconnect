@@ -61,8 +61,8 @@ macros).
 |---|---|
 | `lib.rs` | `build_state()`, the axum `router()`, all route wiring |
 | `main.rs` | bootstrap, tracing, CLI subcommands (`create-user`, `reparse`), spawns workers |
-| `config.rs` | `Config` from `HC_*` env (bind, data dir, public URL, jwt secret, web dir, retention, `vaapi_device`) |
-| `state.rs` | `AppState { config, pool, blobs, athena }` |
+| `config.rs` | `Config` from `HC_*` env (bind, data dir, public URL, jwt secret, web dir, retention, `vaapi_device`, sync/movie/autoprune seeds) |
+| `state.rs` | `AppState { config, pool, blobs, athena, sync_queue, movie_queue }` |
 | `db.rs` | SQLite pool (WAL), `migrate!`, `now_millis/now_secs` |
 | `models.rs` | `User`, `Device` `FromRow` structs (booleans are `i64`) |
 | `error.rs` | `AppError` → HTTP; `AppResult<T>` |
@@ -70,20 +70,20 @@ macros).
 | `access.rs` | `can_view_device/dongle/route` + `load_device` authorization helpers |
 | `storage.rs` | filesystem blob store; key = `{dongle}_{ts}--{seg}--{file}`, sharded by sha256 |
 | `ingest.rs` | `connectincoming` PUT handlers; qlog→parse, everything else→register URL |
-| `parse.rs` | qlog decode (capnp) → routes/segments + coords/events/telemetry/sprite; haversine; route aggregation; `reparse_all` |
+| `parse.rs` | qlog decode (capnp) → routes/segments + coords/events/telemetry (incl. MADS lateral/longitudinal engagement)/sprite + per-drive stats; `extract_model` builds `model.json` (modelV2 path/lanes/lead from the rlog) for the overlay/top-down; haversine; route aggregation; `reparse_all` |
 | `cereal/mod.rs` | generated capnp bindings (built by `build.rs` from `vendor/cereal`) |
 | `athena.rs` | device websocket: `ConnectionManager`, 10s ping, online/offline, stale reaper |
 | `serve.rs` | `connectdata` blob serving with HTTP Range (206); transcode + audio serving |
 | `transcode.rs` | HEVC→H.264 (VAAPI qp28 or CPU libx264 veryfast/crf23, CPU fallback), audio extract, disk-cached, semaphore-bounded; runtime device selection (`list/current/set_device`); `ffprobe` duration; `clean_cache_tmp` (orphaned `.tmp.ts`/`.part` sweep at startup) |
-| `movie.rs` | Per-drive stitched "movie" artifacts: all of a camera's segments concatenated (ffmpeg `concat:` protocol — raw HEVC + TS byte-concatenate cleanly, no temp) and encoded **once** into a single seekable H.264 MP4 with qcamera's audio muxed in. qcamera = stream copy; HEVC cams encoded (same VAAPI/CPU choice as transcode). Route-level blob `{dongle}_{ts}--movie--{cam}.mp4`; `movies` table (mig 0008) tracks freshness (built `seg_count`). `spawn` runs a `sweep` that builds any drive fully covered by a camera but missing/stale — eager, background. On/off + interval + encode settings (resolution `movie_scale` native/854/640, quality `movie_crf` → x264 crf and VAAPI `qp=crf+5`, `movie_preset`) are runtime settings (enable/interval seeded from `HC_MOVIE_ENABLED`/`HC_MOVIE_INTERVAL_SECS`), re-read each cycle/build and honored mid-sweep; `reencode_all` (POST `/v1/admin/encoding/reencode`) clears non-disabled movies so they rebuild with new settings — a **separate loop** from devsync, not gated by the sync toggle. The interval sleep wakes early via `MovieQueue::request_sweep`, which the devsync workers call when the pull queue drains (`stats().files == 0`) — so a freshly-synced drive starts encoding within seconds instead of waiting a full interval. `MovieQueue` (in `AppState`) tracks live progress for the header badge (`/v1/movies/queue`). `status` powers the UI; `delete` drops a movie+row (used for rebuild + when source segments are deleted); `disable` deletes the blob and sets `movies.disabled=1` so a user-deleted movie isn't auto-rebuilt (Manage data → Delete/Rebuild via `POST /v1/route/{fullname}/movie/{cam}` `{action}`). Empty/0-byte sources are skipped and unbuildable attempts marked (`movies.bytes=0`) so they aren't retried |
+| `movie.rs` | Per-drive stitched "movie" artifacts: all of a camera's segments concatenated (ffmpeg `concat:` protocol — raw HEVC + TS byte-concatenate cleanly, no temp) and encoded **once** into a single seekable H.264 MP4 with qcamera's audio muxed in. qcamera is re-encoded to constant 20fps too (a stream copy is variable-rate across segment joins → browsers ignore playbackRate); HEVC cams encoded (same VAAPI/CPU choice as transcode). Route-level blob `{dongle}_{ts}--movie--{cam}.mp4`; `movies` table (mig 0008) tracks freshness (built `seg_count`). `spawn` runs a `sweep` that builds any drive fully covered by a camera but missing/stale — eager, background. On/off + interval + encode settings (resolution `movie_scale` native/854/640, quality `movie_crf` → x264 crf and VAAPI `qp=crf+5`, `movie_preset`) are runtime settings (enable/interval seeded from `HC_MOVIE_ENABLED`/`HC_MOVIE_INTERVAL_SECS`), re-read each cycle/build and honored mid-sweep; `reencode_all` (POST `/v1/admin/encoding/reencode`) clears non-disabled movies so they rebuild with new settings — a **separate loop** from devsync, not gated by the sync toggle. The interval sleep wakes early via `MovieQueue::request_sweep`, which the devsync workers call when the pull queue drains (`stats().files == 0`) — so a freshly-synced drive starts encoding within seconds instead of waiting a full interval. `MovieQueue` (in `AppState`) tracks live progress for the header badge (`/v1/movies/queue`). `status` powers the UI; `delete` drops a movie+row (used for rebuild + when source segments are deleted); `disable` deletes the blob and sets `movies.disabled=1` so a user-deleted movie isn't auto-rebuilt (Manage data → Delete/Rebuild via `POST /v1/route/{fullname}/movie/{cam}` `{action}`). Empty/0-byte sources are skipped and unbuildable attempts marked (`movies.bytes=0`) so they aren't retried |
 | `retention.rs` | periodic prune by age/count/size; `delete_route`; `load/save_policy` |
 | `api/users.rs` | login, `/v1/me`, admin user create + the `create_user_row` CLI helper |
-| `api/v1.rs` | `upload_url(s)`, device info/location/stats, `my_devices`/`unpaired_devices`/`claim`, `routes_segments`, `camera_m3u8` (qcamera + transcoded cams + audio) |
+| `api/v1.rs` | `upload_url(s)`, device info/location/stats, `my_devices`/`unpaired_devices`/`claim`, `my_stats`/`my_paths` (all-time + all-drives map), `routes_segments`, `camera_m3u8` (qcamera + transcoded cams + audio), `route_movies`/`movie_queue`/`route_movie_action` |
 | `api/v2.rs` | `pilotauth` (register), `pilotpair` |
-| `api/settings.rs` | admin retention + transcode-device + sync on/off toggle GET/POST + run-now |
+| `api/settings.rs` | admin: retention, transcode-device, drive-sync (toggle/interval/types/autoprune), movie-encoding (toggle/interval/quality + re-encode-all), road-camera calibration (`cam-calib`) — GET/POST + retention run-now |
 | `api/manage.rs` | per-route download (streamed stored zip) + delete selected types off the server and/or the device (`target`) |
 | `api/onboard.rs` | serves the host-templated `onboard.sh` (repoint + device-scoped SSH key) |
-| `api/devsync.rs` | `POST /v1/devices/{d}/sync` — manual SSH-pull trigger (`?full=&route=`) |
+| `api/devsync.rs` | `POST /v1/devices/{d}/sync` — manual SSH-pull trigger (`?full=&route=`); `/v1/sync/queue` stats; `GET/POST /v1/route/{fullname}/sync` per-drive type override |
 | `device_ssh.rs` | homeconnect's device-scoped ed25519 keypair; `run` (command) + `pull_file` (scp) over key-only SSH to `comma@<last_addr>` |
 | `device_params.rs` | curated allowlist of openpilot params; read/validated-write over SSH (`is_writable`); local write-through cache (`device_params` table): edits are instant + offline, flushed on connect |
 | `api/device_params.rs` | `GET/POST /v1/devices/{d}/params` — read/set allowlisted device settings; `GET/POST /v1/devices/{d}/model` — read/switch the sunnypilot driving model (owner/admin) |
@@ -156,7 +156,15 @@ macros).
   `-af adelay=<ms>` so the track realigns. `-itsoffset` was tried first but
   interacts nonlinearly with the qcamera input's own A/V normalization (the
   qcamera.ts carries video too) — `adelay` is deterministic. The qcamera "Road"
-  movie is a stream copy (A/V interleaved, already aligned) so it needs no fix.
+  movie takes both A/V from the one qcamera input, so that intrinsic gap stays
+  aligned without `adelay`.
+- **Movie playbackRate (CFR)**: a movie must be **constant-frame-rate** or browsers
+  ignore `<video>.playbackRate` (the speed toggles silently do nothing). The HEVC
+  cams are encoded at `-r 20` (CFR) so they're fine; the qcamera movie was once a
+  stream copy, but concatenating qcamera.ts segments yields irregular timestamps =
+  VFR (`avg_frame_rate` a weird ratio vs a clean `20/1`), which broke speed on the
+  Road video — so qcamera is now re-encoded `-vsync cfr -r 20` like the others.
+  Check with `ffprobe … avg_frame_rate` when playbackRate misbehaves.
 - **Movies vs HLS**: a drive plays as dozens of 1-min clips via HLS, with audio
   (qcamera-only) layered over the silent full-res cams by a JS sync hack. A
   `movie.rs` artifact stitches+encodes the whole drive once into one MP4 **with
@@ -267,6 +275,11 @@ and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
   0600 files in `/data/params/d`; writes use openpilot's atomic temp-file +
   `flock`'d rename. Only allowlisted keys with valid values are writable
   (`is_writable`); read-only `Info` keys (DongleId, GitBranch) are display-only.
+  **`SshEnabled` is deliberately `Info` (read-only):** it start/stops the whole
+  sshd service on the device (via `/usr/comma/set_ssh.sh` + an immediate
+  `ssh-param-watcher.path` unit; ssh.service is disabled-at-boot), and SSH is the
+  channel homeconnect uses — turning it off would lock homeconnect out with no
+  remote way back. Toggle SSH on the device screen, not here.
   Specs are `Bool`/`Int`(min,max,step)/`Enum`(options)/`Info`, grouped, mirroring
   sunnypilot's `selfdrive/ui/sunnypilot/layouts/settings/`. **Caveat:** some
   sunnypilot sliders store a `value_map`'d value, not the slider index — model
