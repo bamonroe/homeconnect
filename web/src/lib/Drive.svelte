@@ -61,16 +61,20 @@
   let rate = $state(1);    // playback speed
   let cam = $state(localStorage.getItem('hc_cam') || 'qcamera');
 
-  // Movable panes. Each pane has an id, a width (half/full of the row) and a
-  // pixel height; the order in the array is the on-screen order. Drag a pane's
-  // header onto another to swap them; both layout + sizes persist.
+  // Movable panes on a dense CSS grid. Each pane spans `cols` of GRID_COLS columns
+  // and `rows` of fixed-height rows; dense auto-flow backfills gaps so a short pane
+  // doesn't leave dead space. Drag a pane's header onto another to swap; drag the
+  // bottom-right corner to resize (snapped to grid cells). Layout persists.
+  const GRID_COLS = 4;
+  const ROW_PX = 22; // grid-auto-rows height
+  const GAP_PX = 8;
   const PANE_TITLES = { video: 'Video', map: 'Map', graph: 'Timeline', topdown: 'Top-down', events: 'Engagements' };
   const DEFAULT_PANES = [
-    { id: 'video', w: 'half', h: 440 },
-    { id: 'map', w: 'half', h: 440 },
-    { id: 'graph', w: 'full', h: 175 },
-    { id: 'topdown', w: 'full', h: 360 },
-    { id: 'events', w: 'full', h: 220 },
+    { id: 'video', cols: 2, rows: 18 },
+    { id: 'map', cols: 2, rows: 18 },
+    { id: 'graph', cols: 4, rows: 7 },
+    { id: 'topdown', cols: 4, rows: 15 },
+    { id: 'events', cols: 4, rows: 9 },
   ];
   function loadPanes() {
     try {
@@ -78,8 +82,14 @@
       if (Array.isArray(saved) && saved.length) {
         const order = saved.map((p) => p.id);
         const byId = Object.fromEntries(saved.map((p) => [p.id, p]));
-        // Keep saved order/sizes; append any pane ids added since (new features).
-        const merged = DEFAULT_PANES.map((d) => ({ ...d, ...(byId[d.id] || {}) }));
+        const merged = DEFAULT_PANES.map((d) => {
+          const s = byId[d.id];
+          if (!s) return { ...d };
+          // Migrate the old {w:'half'|'full', h:px} format to {cols, rows}.
+          const cols = s.cols ?? (s.w === 'full' ? 4 : 2);
+          const rows = s.rows ?? Math.max(4, Math.round((s.h ?? 300) / (ROW_PX + GAP_PX)));
+          return { id: d.id, cols, rows };
+        });
         merged.sort((a, b) => {
           const ai = order.indexOf(a.id), bi = order.indexOf(b.id);
           return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi);
@@ -90,6 +100,7 @@
     return structuredClone(DEFAULT_PANES);
   }
   let panes = $state(loadPanes());
+  let panesEl;
   let dragId = $state(null);
   let overId = $state(null);
   // Top-down only appears when enabled; the others are always shown.
@@ -114,31 +125,46 @@
     [panes[from], panes[to]] = [panes[to], panes[from]];
     panes = [...panes];
     savePanes();
-    setTimeout(() => map?.resize(), 0);
   }
   function toggleWidth(id) {
     const p = panes.find((p) => p.id === id);
-    if (p) { p.w = p.w === 'half' ? 'full' : 'half'; panes = [...panes]; savePanes(); setTimeout(() => map?.resize(), 0); }
+    if (p) { p.cols = p.cols >= GRID_COLS ? 2 : GRID_COLS; panes = [...panes]; savePanes(); }
   }
   function resetLayout() {
     panes = structuredClone(DEFAULT_PANES);
     localStorage.removeItem('hc_drive_panes');
-    setTimeout(() => map?.resize(), 0);
   }
-  // Svelte action: apply the saved height, and persist + reflow on native resize.
-  function paneSize(node, p) {
-    node.style.height = p.h + 'px';
+  // Drag the bottom-right corner to resize a pane (snapped to grid cells); dense
+  // flow reflows the rest. The map's own ResizeObserver re-measures it.
+  function startCornerResize(p, e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = panesEl.getBoundingClientRect();
+    const cellW = (rect.width - (GRID_COLS - 1) * GAP_PX) / GRID_COLS;
+    const colStep = cellW + GAP_PX, rowStep = ROW_PX + GAP_PX;
+    const sx = e.clientX, sy = e.clientY, sc = p.cols, sr = p.rows;
+    const move = (ev) => {
+      p.cols = Math.max(1, Math.min(GRID_COLS, sc + Math.round((ev.clientX - sx) / colStep)));
+      p.rows = Math.max(4, sr + Math.round((ev.clientY - sy) / rowStep));
+      panes = [...panes];
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      savePanes();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+  // Keep maplibre sized to its (re-flowing) pane.
+  function mapAutoResize(node) {
     let raf;
     const ro = new ResizeObserver(() => {
-      const h = node.offsetHeight;
-      if (h && Math.abs(h - p.h) >= 1) {
-        p.h = h;
-        savePanes();
-        if (p.id === 'map') { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => map?.resize()); }
-      }
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => map?.resize());
     });
     ro.observe(node);
-    return { destroy() { ro.disconnect(); } };
+    return { destroy() { ro.disconnect(); cancelAnimationFrame(raf); } };
   }
 
   // Which cameras this route actually has (from the route's max* fields).
@@ -493,12 +519,12 @@
 
   {#if error}<div class="error pad">{error}</div>{/if}
 
-  <div class="panes">
+  <div class="panes" bind:this={panesEl}>
     {#each visiblePanes as p (p.id)}
       <section
-        class="pane {p.w}"
+        class="pane"
         class:over={overId === p.id && dragId && dragId !== p.id}
-        use:paneSize={p}
+        style="grid-column: span {p.cols}; grid-row: span {p.rows};"
         ondragover={(e) => { e.preventDefault(); overId = p.id; }}
         ondragleave={() => { if (overId === p.id) overId = null; }}
         ondrop={() => onDrop(p.id)}
@@ -513,7 +539,7 @@
           <span class="grip">⠿</span>
           <span class="pane-title">{PANE_TITLES[p.id]}</span>
           <button class="wtoggle" title="Half / full width" onclick={() => toggleWidth(p.id)}>
-            {p.w === 'half' ? '⤢' : '⤡'}
+            {p.cols >= GRID_COLS ? '⤡' : '⤢'}
           </button>
         </div>
 
@@ -580,7 +606,7 @@
               </div>
             {/if}
           {:else if p.id === 'map'}
-            <div class="map" bind:this={mapEl}></div>
+            <div class="map" bind:this={mapEl} use:mapAutoResize></div>
           {:else if p.id === 'graph'}
             <DriveGraph {telemetry} {curT} onseek={(t) => seek(t * 1000)} />
           {:else if p.id === 'topdown'}
@@ -607,6 +633,7 @@
             </div>
           {/if}
         </div>
+        <div class="resize-corner" title="Drag to resize" onpointerdown={(e) => startCornerResize(p, e)}></div>
       </section>
     {/each}
   </div>
@@ -630,14 +657,18 @@
   .statstrip { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 8px 16px;
     border-bottom: 1px solid var(--border); font-size: 13px; color: var(--muted); }
   .statstrip .s b { color: var(--text); }
-  /* Movable panes: flow in order, half/full width, each resizable in height. */
-  .panes { flex: 1; min-height: 0; overflow: auto; display: flex; flex-wrap: wrap;
-    align-content: flex-start; gap: 8px; padding: 8px; }
-  .pane { display: flex; flex-direction: column; min-width: 0; background: var(--panel);
-    border: 1px solid var(--border); border-radius: 10px; overflow: hidden; resize: vertical; }
-  .pane.half { width: calc(50% - 4px); }
-  .pane.full { width: 100%; }
+  /* Movable panes on a dense grid: each spans cols×rows; dense flow fills gaps. */
+  .panes { flex: 1; min-height: 0; overflow: auto; display: grid;
+    grid-template-columns: repeat(4, 1fr); grid-auto-rows: 22px; grid-auto-flow: row dense;
+    gap: 8px; padding: 8px; align-content: start; }
+  .pane { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .pane.over { outline: 2px dashed var(--accent); outline-offset: -2px; }
+  .resize-corner { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
+    cursor: nwse-resize; touch-action: none; z-index: 2; }
+  .resize-corner::after { content: ''; position: absolute; right: 3px; bottom: 3px; width: 8px; height: 8px;
+    border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); }
+  .resize-corner:hover::after { border-color: var(--accent); }
   .pane-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; flex: none;
     background: var(--panel-2); border-bottom: 1px solid var(--border); cursor: grab; user-select: none; }
   .pane-head:active { cursor: grabbing; }
@@ -685,6 +716,6 @@
   .reason.r-steering { color: #d29922; border-color: #9e7615; }
   .small { font-size: 12px; }
   @media (max-width: 800px) {
-    .pane.half { width: 100%; }
+    .pane { grid-column: 1 / -1 !important; }
   }
 </style>
