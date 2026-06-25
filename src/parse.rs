@@ -206,6 +206,11 @@ struct Accum {
     has_gps: bool,
     cur_engaged: bool,    // latest openpilot-engaged state (for telemetry samples)
     seen_selfdrive: bool, // have we read engagement state yet this segment?
+    // Device health (from DeviceState).
+    max_temp: f32,
+    min_free: f32,
+    max_mem: i32,
+    has_health: bool,
     // selfdrive state collapsing
     last_state: Option<(bool, i32)>,
 }
@@ -342,6 +347,21 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
             acc.last_pt = Some((lat, lng));
 
             acc.coords.push(Coord { t, lat, lng, speed, dist });
+        }
+        DeviceState(Ok(ds)) => {
+            let temp = ds.get_max_temp_c();
+            if temp > acc.max_temp {
+                acc.max_temp = temp;
+            }
+            let fsp = ds.get_free_space_percent();
+            if !acc.has_health || fsp < acc.min_free {
+                acc.min_free = fsp;
+            }
+            let mem = ds.get_memory_usage_percent() as i32;
+            if mem > acc.max_mem {
+                acc.max_mem = mem;
+            }
+            acc.has_health = true;
         }
         CarParams(Ok(cp)) => {
             if let Ok(fp) = cp.get_car_fingerprint() {
@@ -524,8 +544,8 @@ async fn upsert_segment(
            (canonical_name, canonical_route_name, number, start_lat, start_lng, end_lat, end_lng, \
             miles, start_time_utc_millis, end_time_utc_millis, created_at, \
             engaged_meters, telem_meters, engaged_seconds, drive_seconds, max_speed, \
-            disengage_count, hard_brake_count, hard_accel_count) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            disengage_count, hard_brake_count, hard_accel_count, max_temp, min_free, max_mem) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(canonical_name) DO UPDATE SET \
            start_lat = excluded.start_lat, start_lng = excluded.start_lng, \
            end_lat = excluded.end_lat, end_lng = excluded.end_lng, miles = excluded.miles, \
@@ -534,7 +554,8 @@ async fn upsert_segment(
            engaged_meters = excluded.engaged_meters, telem_meters = excluded.telem_meters, \
            engaged_seconds = excluded.engaged_seconds, drive_seconds = excluded.drive_seconds, \
            max_speed = excluded.max_speed, disengage_count = excluded.disengage_count, \
-           hard_brake_count = excluded.hard_brake_count, hard_accel_count = excluded.hard_accel_count",
+           hard_brake_count = excluded.hard_brake_count, hard_accel_count = excluded.hard_accel_count, \
+           max_temp = excluded.max_temp, min_free = excluded.min_free, max_mem = excluded.max_mem",
     )
     .bind(&canonical)
     .bind(&route)
@@ -555,6 +576,9 @@ async fn upsert_segment(
     .bind(st.disengage)
     .bind(st.hard_brake)
     .bind(st.hard_accel)
+    .bind(acc.max_temp)
+    .bind(if acc.has_health { acc.min_free } else { -1.0 })
+    .bind(acc.max_mem)
     .execute(&state.pool)
     .await?;
 
@@ -668,6 +692,9 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
         disengage_count: i64,
         hard_brake_count: i64,
         hard_accel_count: i64,
+        max_temp: f64,
+        min_free: f64,
+        max_mem: i64,
     }
 
     let segs: Vec<SegRow> = sqlx::query_as(
@@ -675,7 +702,7 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
                 start_lat, start_lng, end_lat, end_lng, miles, \
                 start_time_utc_millis, end_time_utc_millis, \
                 engaged_meters, telem_meters, engaged_seconds, drive_seconds, max_speed, \
-                disengage_count, hard_brake_count, hard_accel_count \
+                disengage_count, hard_brake_count, hard_accel_count, max_temp, min_free, max_mem \
          FROM segments WHERE canonical_route_name = ? ORDER BY number ASC",
     )
     .bind(&fullname)
@@ -718,6 +745,14 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
     let disengage: i64 = segs.iter().map(|s| s.disengage_count).sum();
     let hard_brake: i64 = segs.iter().map(|s| s.hard_brake_count).sum();
     let hard_accel: i64 = segs.iter().map(|s| s.hard_accel_count).sum();
+    let max_temp: f64 = segs.iter().map(|s| s.max_temp).fold(0.0, f64::max);
+    let min_free: f64 = segs
+        .iter()
+        .map(|s| s.min_free)
+        .filter(|&f| f >= 0.0)
+        .fold(f64::MAX, f64::min);
+    let min_free = if min_free == f64::MAX { -1.0 } else { min_free };
+    let max_mem: i64 = segs.iter().map(|s| s.max_mem).max().unwrap_or(0);
 
     sqlx::query(
         "UPDATE routes SET \
@@ -726,7 +761,8 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
            segment_numbers = ?, segment_start_times = ?, segment_end_times = ?, \
            maxqcamera = ?, maxcamera = ?, maxdcamera = ?, maxecamera = ?, maxqlog = ?, maxlog = ?, \
            engaged_meters = ?, telem_meters = ?, engaged_seconds = ?, drive_seconds = ?, \
-           max_speed = ?, disengage_count = ?, hard_brake_count = ?, hard_accel_count = ? \
+           max_speed = ?, disengage_count = ?, hard_brake_count = ?, hard_accel_count = ?, \
+           max_temp = ?, min_free = ?, max_mem = ? \
          WHERE fullname = ?",
     )
     .bind(start_t)
@@ -753,6 +789,9 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
     .bind(disengage)
     .bind(hard_brake)
     .bind(hard_accel)
+    .bind(max_temp)
+    .bind(min_free)
+    .bind(max_mem)
     .bind(&fullname)
     .execute(&state.pool)
     .await?;

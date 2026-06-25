@@ -422,6 +422,9 @@ struct RouteRow {
     disengage_count: i64,
     hard_brake_count: i64,
     hard_accel_count: i64,
+    max_temp: f64,
+    min_free: f64,
+    max_mem: i64,
 }
 
 fn json_arr(s: &str) -> Value {
@@ -468,6 +471,9 @@ fn route_json(r: &RouteRow, public_url: &str, sig: &str) -> Value {
         "disengage_count": r.disengage_count,
         "hard_brake_count": r.hard_brake_count,
         "hard_accel_count": r.hard_accel_count,
+        "max_temp": r.max_temp,
+        "free_space": r.min_free,
+        "max_mem": r.max_mem,
         "url": format!("{public_url}/connectdata/{}", r.fullname.replace('|', "/")),
         "qcamera_m3u8": format!("{public_url}/v1/route/{}/qcamera.m3u8", r.fullname),
         "share_sig": sig,

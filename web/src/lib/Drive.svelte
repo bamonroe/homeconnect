@@ -345,6 +345,8 @@
       <span class="s"><b>{route.disengage_count ?? 0}</b> disengage{(route.disengage_count ?? 0) === 1 ? '' : 's'}</span>
       {#if route.hard_brake_count}<span class="s">⚠ <b>{route.hard_brake_count}</b> hard brake{route.hard_brake_count === 1 ? '' : 's'}</span>{/if}
       {#if route.hard_accel_count}<span class="s">⚠ <b>{route.hard_accel_count}</b> hard accel{route.hard_accel_count === 1 ? '' : 's'}</span>{/if}
+      {#if route.max_temp > 0}<span class="s">🌡 <b>{Math.round(route.max_temp)}</b>°C</span>{/if}
+      {#if route.free_space >= 0}<span class="s"><b>{Math.round(route.free_space)}</b>% disk free</span>{/if}
     </div>
   {/if}
 
