@@ -664,11 +664,18 @@
   .pane { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0;
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .pane.over { outline: 2px dashed var(--accent); outline-offset: -2px; }
-  .resize-corner { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
-    cursor: nwse-resize; touch-action: none; z-index: 2; }
-  .resize-corner::after { content: ''; position: absolute; right: 3px; bottom: 3px; width: 8px; height: 8px;
-    border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); }
-  .resize-corner:hover::after { border-color: var(--accent); }
+  /* Obvious corner grip: a tinted "fold" + diagonal gripper lines, big hit area. */
+  .resize-corner { position: absolute; right: 0; bottom: 0; width: 30px; height: 30px;
+    cursor: nwse-resize; touch-action: none; z-index: 3;
+    background: linear-gradient(135deg, transparent 0 46%, var(--border) 46% 54%, var(--panel-2) 54%);
+    /* Only the lower-right triangle is the hit area, so content beneath the rest
+       of the square stays clickable. */
+    clip-path: polygon(100% 0, 100% 100%, 0 100%); transition: background 0.1s; }
+  .resize-corner::after { content: ''; position: absolute; right: 4px; bottom: 4px; width: 14px; height: 14px;
+    background: repeating-linear-gradient(135deg, var(--muted) 0 2px, transparent 2px 4px);
+    clip-path: polygon(100% 0, 100% 100%, 0 100%); }
+  .resize-corner:hover { background: linear-gradient(135deg, transparent 0 46%, var(--accent) 46% 54%, var(--panel-2) 54%); }
+  .resize-corner:hover::after { background: repeating-linear-gradient(135deg, var(--accent) 0 2px, transparent 2px 4px); }
   .pane-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; flex: none;
     background: var(--panel-2); border-bottom: 1px solid var(--border); cursor: grab; user-select: none; }
   .pane-head:active { cursor: grabbing; }
