@@ -136,20 +136,25 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
     let src_file = source_file(cam).ok_or_else(|| AppError::BadRequest(format!("unknown camera: {cam}")))?;
 
     let segs = segments_with_cam(state, &fullname, cam).await?;
+    let seg_count = segs.len() as i64;
     if segs.is_empty() {
         return Err(AppError::NotFound(format!("no {cam} segments for {fullname}")));
     }
 
-    // Ordered source (video) blob paths; skip any whose blob is missing on disk.
+    // Ordered source (video) blob paths; skip any blob that's missing or 0 bytes
+    // (empty/junk segments — e.g. a 1-segment "drive" with a 0-byte qcamera — can't
+    // be encoded and would just fail ffmpeg).
     let mut v_paths: Vec<String> = Vec::new();
     for &n in &segs {
         let p = state.blobs.path_for(&crate::storage::blob_key(dongle, ts, n, src_file));
-        if tokio::fs::try_exists(&p).await.unwrap_or(false) {
+        if nonempty(&p).await {
             v_paths.push(p.to_string_lossy().to_string());
         }
     }
     if v_paths.is_empty() {
-        return Err(AppError::NotFound(format!("no {cam} blobs on disk for {fullname}")));
+        // Nothing usable — record the attempt so the sweep doesn't retry it forever.
+        record(state, &fullname, cam, seg_count, 0, 0.0).await;
+        return Err(AppError::NotFound(format!("no usable {cam} source for {fullname}")));
     }
 
     // Audio comes from qcamera (which carries the mic track) for the same segments.
@@ -157,7 +162,7 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
     let mut a_paths: Vec<String> = Vec::new();
     for &n in &qsegs {
         let p = state.blobs.path_for(&crate::storage::blob_key(dongle, ts, n, "qcamera.ts"));
-        if tokio::fs::try_exists(&p).await.unwrap_or(false) {
+        if nonempty(&p).await {
             a_paths.push(p.to_string_lossy().to_string());
         }
     }
@@ -198,6 +203,8 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
 
     if !ok {
         let _ = tokio::fs::remove_file(&tmp).await;
+        // Mark the failed attempt (bytes=0) so it isn't retried at this coverage.
+        record(state, &fullname, cam, seg_count, 0, 0.0).await;
         return Err(AppError::Other(anyhow::anyhow!("movie encode failed for {cam}")));
     }
 
@@ -205,27 +212,35 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
     let bytes = tokio::fs::metadata(&out_path).await.map(|m| m.len()).unwrap_or(0);
     let duration = transcode::probe_duration(&out_path).await.unwrap_or(0.0);
 
-    // Record freshness: the movie is current for this many covered segments.
-    let seg_count = segments_with_cam(state, &fullname, cam).await?.len() as i64;
+    record(state, &fullname, cam, seg_count, bytes as i64, duration).await;
+    tracing::info!(%fullname, %cam, segs = seg_count, bytes, "movie: built");
+    Ok(bytes)
+}
+
+/// True if the blob exists and is non-empty.
+async fn nonempty(path: &std::path::Path) -> bool {
+    tokio::fs::metadata(path).await.map(|m| m.len() > 0).unwrap_or(false)
+}
+
+/// Record a build outcome in the `movies` freshness table. `bytes == 0` marks a
+/// failed/empty attempt (so the sweep skips it until the segment coverage changes).
+async fn record(state: &AppState, fullname: &str, cam: &str, seg_count: i64, bytes: i64, duration: f64) {
     let now = crate::db::now_secs();
-    sqlx::query(
+    let _ = sqlx::query(
         "INSERT INTO movies (fullname, cam, seg_count, bytes, duration, built_at) \
          VALUES (?, ?, ?, ?, ?, ?) \
          ON CONFLICT(fullname, cam) DO UPDATE SET \
            seg_count = excluded.seg_count, bytes = excluded.bytes, \
            duration = excluded.duration, built_at = excluded.built_at",
     )
-    .bind(&fullname)
+    .bind(fullname)
     .bind(cam)
     .bind(seg_count)
-    .bind(bytes as i64)
+    .bind(bytes)
     .bind(duration)
     .bind(now)
     .execute(&state.pool)
-    .await?;
-
-    tracing::info!(%fullname, %cam, segs = seg_count, bytes, "movie: built");
-    Ok(bytes)
+    .await;
 }
 
 /// qcamera: copy the concatenated H.264 + AAC into a faststart MP4.
@@ -357,13 +372,14 @@ pub async fn sweep(state: &AppState) {
                 return;
             }
         };
-    let built: std::collections::HashMap<(String, String), i64> =
-        sqlx::query_as::<_, (String, String, i64)>("SELECT fullname, cam, seg_count FROM movies")
+    // (fullname, cam) → (seg_count, bytes). bytes==0 marks a known-failed attempt.
+    let built: std::collections::HashMap<(String, String), (i64, i64)> =
+        sqlx::query_as::<_, (String, String, i64, i64)>("SELECT fullname, cam, seg_count, bytes FROM movies")
             .fetch_all(&state.pool)
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|(f, c, n)| ((f, c), n))
+            .map(|(f, c, n, b)| ((f, c), (n, b)))
             .collect();
 
     // First pass: gather every movie that needs (re)building, so the badge can
@@ -388,9 +404,16 @@ pub async fn sweep(state: &AppState) {
                 continue;
             }
             let key = (fullname.clone(), cam.to_string());
-            let fresh = built.get(&key) == Some(&total)
-                && state.blobs.exists(&movie_key(&dongle, &ts, cam)).await;
-            if fresh {
+            let skip = match built.get(&key) {
+                // Already attempted at this exact coverage:
+                Some((sc, bytes)) if *sc == total => {
+                    // failed/empty (bytes==0) → don't retry; success → skip iff the
+                    // blob is still present (rebuild if it was deleted).
+                    *bytes == 0 || state.blobs.exists(&movie_key(&dongle, &ts, cam)).await
+                }
+                _ => false,
+            };
+            if skip {
                 continue;
             }
             todo.push((fullname.clone(), dongle.clone(), ts.clone(), cam));
@@ -430,6 +453,9 @@ pub async fn delete(state: &AppState, dongle: &str, ts: &str, cam: &str) {
 pub fn spawn(state: AppState) {
     tracing::info!("movie: background builder (full-res CRF, eager per drive)");
     tokio::spawn(async move {
+        // Clear prior failed/empty markers so a code change gets one fresh attempt
+        // per restart (genuinely-empty drives just re-mark and stop retrying).
+        let _ = sqlx::query("DELETE FROM movies WHERE bytes = 0").execute(&state.pool).await;
         loop {
             sweep(&state).await;
             tokio::time::sleep(Duration::from_secs(SWEEP_SECS)).await;
