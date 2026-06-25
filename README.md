@@ -150,15 +150,17 @@ failure falls back to CPU per-transcode. Note that a low-end discrete card can b
 More can be mined from the qlog data we already collect. Rough priority:
 
 **Quick wins (data already in hand)**
-- [ ] Trip stats + **autonomy %** — engaged ÷ total miles, disengagements/100 mi, avg/max speed, drive time; per-drive and all-time.
-- [ ] **Hard-event highlights** — auto-flag hard braking / acceleration / cornering (from `aEgo`/`yawRate`) and list them like engagements (click to jump).
-- [ ] Speed/accel **graph along the scrubber**.
+- [x] Trip stats + **autonomy %** — per-drive + all-time **Stats** page, autonomy, disengagements/100 mi, avg/max speed, drive time.
+- [x] **Hard-event highlights** — hard braking/acceleration flagged (speed derivative), counted per drive + marked on the timeline graph.
+- [x] Speed/accel **graph along the scrubber** — speed over the drive with engaged shading, hard-event marks, click-to-seek.
 
 **Higher value, moderate effort (verify the message is in the qlog first)**
-- [ ] **Disengagement reasons** (`onroadEvents`) — annotate each disengage with *why* (override, distracted, model-uncertain, …). The standout review feature.
+- [x] **Disengagement reasons** — each disengage tagged by the driver input at the transition (gas / brake / steering override, or manual). (Richer `onroadEvents` reasons still possible.)
 - [ ] **Driver attention** timeline + distracted markers (`driverMonitoringState`).
 - [ ] **Lead car / following distance** over time (`radarState`).
-- [ ] **Device health** — CPU temp, free space, network, thermal-throttle events (`DeviceState`).
+- [x] **Device health** — peak temp, free space, memory per drive (`DeviceState`), on the drive stats strip.
+
+**All-drives map** — [x] every drive's GPS path on one map, colored by autonomy (Stats page).
 
 **Flashy / bigger projects**
 - [ ] openpilot-style **overlay on the road camera** — predicted path + lane lines + lead box (`modelV2`; needs camera projection + a canvas synced to playback).
