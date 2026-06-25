@@ -322,6 +322,17 @@
 
   {#if pullMsg}<div class="muted pad">{pullMsg}</div>{/if}
 
+  {#if route.telem_miles > 0}
+    <div class="statstrip">
+      <span class="s"><b>{(route.autonomy ?? 0).toFixed(0)}%</b> openpilot</span>
+      <span class="s"><b>{Math.round((route.drive_seconds ?? 0) / 60)}</b> min</span>
+      <span class="s"><b>{(route.avg_speed ?? 0).toFixed(0)}</b> avg · <b>{(route.max_speed ?? 0).toFixed(0)}</b> max mph</span>
+      <span class="s"><b>{route.disengage_count ?? 0}</b> disengage{(route.disengage_count ?? 0) === 1 ? '' : 's'}</span>
+      {#if route.hard_brake_count}<span class="s">⚠ <b>{route.hard_brake_count}</b> hard brake{route.hard_brake_count === 1 ? '' : 's'}</span>{/if}
+      {#if route.hard_accel_count}<span class="s">⚠ <b>{route.hard_accel_count}</b> hard accel{route.hard_accel_count === 1 ? '' : 's'}</span>{/if}
+    </div>
+  {/if}
+
   {#if showManage}
     <ManageData
       {route}
@@ -394,6 +405,9 @@
   .bar .pullfull { margin-left: auto; }
   .bar .manage { margin-left: auto; }
   .pad { padding: 10px 16px; }
+  .statstrip { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 8px 16px;
+    border-bottom: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+  .statstrip .s b { color: var(--text); }
   .grid { flex: 1; min-height: 0; display: flex; }
   .map { flex: 1; min-width: 0; height: 100%; }
   .col-resizer { width: 6px; flex: none; cursor: col-resize; background: var(--border); }

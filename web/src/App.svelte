@@ -5,6 +5,7 @@
   import Drive from './lib/Drive.svelte';
   import Settings from './lib/Settings.svelte';
   import DeviceSettings from './lib/DeviceSettings.svelte';
+  import Stats from './lib/Stats.svelte';
 
   let token = $state(getToken());
   let user = $state(getUser());
@@ -76,6 +77,7 @@
           {/if}
         </span>
         <button class="ghost" class:active={view === 'drives'} onclick={goDrives}>Drives</button>
+        <button class="ghost" class:active={view === 'stats'} onclick={() => (view = 'stats')}>Stats</button>
         {#if user?.is_admin}
           <button class="ghost" class:active={view === 'device'} onclick={() => (view = 'device')}>Device</button>
           <button class="ghost" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
@@ -95,6 +97,8 @@
       <Settings />
     {:else if view === 'device'}
       <DeviceSettings />
+    {:else if view === 'stats'}
+      <Stats />
     {:else if selected}
       {#key selected.route.fullname}
         <Drive route={selected.route} onback={() => (selected = null)} />

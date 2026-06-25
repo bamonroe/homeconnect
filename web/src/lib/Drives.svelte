@@ -134,6 +134,11 @@
               {fmtLen(r.length)} · {fmtDur(r)} · {r.platform || 'unknown'}
             </div>
           </div>
+          {#if r.telem_miles > 0}
+            <div class="auton" title="{(r.autonomy ?? 0).toFixed(0)}% driven by openpilot">
+              <b>{(r.autonomy ?? 0).toFixed(0)}%</b><span>openpilot</span>
+            </div>
+          {/if}
         </button>
       {/each}
     </div>
@@ -161,6 +166,10 @@
     background: var(--panel-2); flex: none; display: grid; place-items: center;
   }
   .thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .meta { flex: 1; }
   .title { font-weight: 600; }
   .sub { font-size: 13px; margin-top: 3px; }
+  .auton { text-align: right; flex: none; padding-right: 4px; }
+  .auton b { display: block; font-size: 20px; color: var(--accent); }
+  .auton span { font-size: 11px; color: var(--muted); }
 </style>

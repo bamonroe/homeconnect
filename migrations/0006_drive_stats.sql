@@ -1,0 +1,20 @@
+-- Per-drive stats derived from telemetry: openpilot engagement (for autonomy %),
+-- speed, disengagements, and hard accel/brake events. Stored per segment and
+-- summed onto the route. Run `reparse` to backfill existing drives.
+ALTER TABLE segments ADD COLUMN engaged_meters   REAL    NOT NULL DEFAULT 0;
+ALTER TABLE segments ADD COLUMN telem_meters     REAL    NOT NULL DEFAULT 0;
+ALTER TABLE segments ADD COLUMN engaged_seconds  REAL    NOT NULL DEFAULT 0;
+ALTER TABLE segments ADD COLUMN drive_seconds    REAL    NOT NULL DEFAULT 0;
+ALTER TABLE segments ADD COLUMN max_speed        REAL    NOT NULL DEFAULT 0;
+ALTER TABLE segments ADD COLUMN disengage_count  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE segments ADD COLUMN hard_brake_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE segments ADD COLUMN hard_accel_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE routes ADD COLUMN engaged_meters   REAL    NOT NULL DEFAULT 0;
+ALTER TABLE routes ADD COLUMN telem_meters     REAL    NOT NULL DEFAULT 0;
+ALTER TABLE routes ADD COLUMN engaged_seconds  REAL    NOT NULL DEFAULT 0;
+ALTER TABLE routes ADD COLUMN drive_seconds    REAL    NOT NULL DEFAULT 0;
+ALTER TABLE routes ADD COLUMN max_speed        REAL    NOT NULL DEFAULT 0;
+ALTER TABLE routes ADD COLUMN disengage_count  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE routes ADD COLUMN hard_brake_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE routes ADD COLUMN hard_accel_count INTEGER NOT NULL DEFAULT 0;

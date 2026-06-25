@@ -54,6 +54,63 @@ struct Telem {
     charging: bool,
 }
 
+/// Aggregate stats derived from a segment's telemetry samples.
+#[derive(Default)]
+struct SegStats {
+    engaged_m: f64,  // distance while openpilot engaged
+    telem_m: f64,    // distance (speed-integrated)
+    engaged_s: f64,  // time engaged
+    drive_s: f64,    // time moving/driving
+    max_speed: f64,  // mph
+    disengage: i64,  // engaged→disengaged transitions
+    hard_brake: i64, // distinct hard-braking events
+    hard_accel: i64, // distinct hard-acceleration events
+}
+
+const MPH_TO_MS: f64 = 0.44704;
+const HARD_BRAKE_MS2: f64 = -3.0; // ~0.3 g
+const HARD_ACCEL_MS2: f64 = 2.5;
+
+/// Compute per-segment driving stats from the (≈4 Hz) telemetry series. Distance
+/// is speed-integrated; hard accel/brake are rising-edge counted (a sustained
+/// event counts once); accel is the derivative of speed.
+fn telemetry_stats(t: &[Telem]) -> SegStats {
+    let mut s = SegStats::default();
+    let (mut prev_v, mut in_brake, mut in_accel) = (None::<f64>, false, false);
+    for i in 0..t.len() {
+        let v_ms = (t[i].speed as f64) * MPH_TO_MS;
+        s.max_speed = s.max_speed.max(t[i].speed as f64);
+        if i > 0 {
+            let dt = t[i].t - t[i - 1].t;
+            if dt > 0.0 && dt < 2.0 {
+                let dist = v_ms * dt;
+                s.telem_m += dist;
+                s.drive_s += dt;
+                if t[i].engaged {
+                    s.engaged_m += dist;
+                    s.engaged_s += dt;
+                }
+                if let Some(pv) = prev_v {
+                    let a = (v_ms - pv) / dt;
+                    in_brake = if a <= HARD_BRAKE_MS2 {
+                        if !in_brake { s.hard_brake += 1; }
+                        true
+                    } else { false };
+                    in_accel = if a >= HARD_ACCEL_MS2 {
+                        if !in_accel { s.hard_accel += 1; }
+                        true
+                    } else { false };
+                }
+            }
+            if t[i - 1].engaged && !t[i].engaged {
+                s.disengage += 1;
+            }
+        }
+        prev_v = Some(v_ms);
+    }
+    s
+}
+
 fn gear_name(g: GearShifter) -> &'static str {
     use GearShifter::*;
     match g {
@@ -458,17 +515,24 @@ async fn upsert_segment(
     let (slat, slng, sts) = acc.first_gps.unwrap_or((0.0, 0.0, 0));
     let (elat, elng, ets) = acc.last_gps.unwrap_or((0.0, 0.0, 0));
     let miles = (acc.total_meters / METERS_PER_MILE) as f64;
+    let st = telemetry_stats(&acc.telemetry);
 
     sqlx::query(
         "INSERT INTO segments \
            (canonical_name, canonical_route_name, number, start_lat, start_lng, end_lat, end_lng, \
-            miles, start_time_utc_millis, end_time_utc_millis, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            miles, start_time_utc_millis, end_time_utc_millis, created_at, \
+            engaged_meters, telem_meters, engaged_seconds, drive_seconds, max_speed, \
+            disengage_count, hard_brake_count, hard_accel_count) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(canonical_name) DO UPDATE SET \
            start_lat = excluded.start_lat, start_lng = excluded.start_lng, \
            end_lat = excluded.end_lat, end_lng = excluded.end_lng, miles = excluded.miles, \
            start_time_utc_millis = excluded.start_time_utc_millis, \
-           end_time_utc_millis = excluded.end_time_utc_millis",
+           end_time_utc_millis = excluded.end_time_utc_millis, \
+           engaged_meters = excluded.engaged_meters, telem_meters = excluded.telem_meters, \
+           engaged_seconds = excluded.engaged_seconds, drive_seconds = excluded.drive_seconds, \
+           max_speed = excluded.max_speed, disengage_count = excluded.disengage_count, \
+           hard_brake_count = excluded.hard_brake_count, hard_accel_count = excluded.hard_accel_count",
     )
     .bind(&canonical)
     .bind(&route)
@@ -481,6 +545,14 @@ async fn upsert_segment(
     .bind(sts)
     .bind(ets)
     .bind(now_millis())
+    .bind(st.engaged_m)
+    .bind(st.telem_m)
+    .bind(st.engaged_s)
+    .bind(st.drive_s)
+    .bind(st.max_speed)
+    .bind(st.disengage)
+    .bind(st.hard_brake)
+    .bind(st.hard_accel)
     .execute(&state.pool)
     .await?;
 
@@ -586,12 +658,22 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
         miles: f64,
         start_time_utc_millis: i64,
         end_time_utc_millis: i64,
+        engaged_meters: f64,
+        telem_meters: f64,
+        engaged_seconds: f64,
+        drive_seconds: f64,
+        max_speed: f64,
+        disengage_count: i64,
+        hard_brake_count: i64,
+        hard_accel_count: i64,
     }
 
     let segs: Vec<SegRow> = sqlx::query_as(
         "SELECT number, qcam_url, fcam_url, dcam_url, ecam_url, qlog_url, rlog_url, \
                 start_lat, start_lng, end_lat, end_lng, miles, \
-                start_time_utc_millis, end_time_utc_millis \
+                start_time_utc_millis, end_time_utc_millis, \
+                engaged_meters, telem_meters, engaged_seconds, drive_seconds, max_speed, \
+                disengage_count, hard_brake_count, hard_accel_count \
          FROM segments WHERE canonical_route_name = ? ORDER BY number ASC",
     )
     .bind(&fullname)
@@ -626,12 +708,23 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
     let maxqlog = max_of(&|s| !s.qlog_url.is_empty());
     let maxlog = max_of(&|s| !s.rlog_url.is_empty());
 
+    let engaged_m: f64 = segs.iter().map(|s| s.engaged_meters).sum();
+    let telem_m: f64 = segs.iter().map(|s| s.telem_meters).sum();
+    let engaged_s: f64 = segs.iter().map(|s| s.engaged_seconds).sum();
+    let drive_s: f64 = segs.iter().map(|s| s.drive_seconds).sum();
+    let max_speed: f64 = segs.iter().map(|s| s.max_speed).fold(0.0, f64::max);
+    let disengage: i64 = segs.iter().map(|s| s.disengage_count).sum();
+    let hard_brake: i64 = segs.iter().map(|s| s.hard_brake_count).sum();
+    let hard_accel: i64 = segs.iter().map(|s| s.hard_accel_count).sum();
+
     sqlx::query(
         "UPDATE routes SET \
            start_time_utc_millis = ?, end_time_utc_millis = ?, \
            start_lat = ?, start_lng = ?, end_lat = ?, end_lng = ?, length = ?, \
            segment_numbers = ?, segment_start_times = ?, segment_end_times = ?, \
-           maxqcamera = ?, maxcamera = ?, maxdcamera = ?, maxecamera = ?, maxqlog = ?, maxlog = ? \
+           maxqcamera = ?, maxcamera = ?, maxdcamera = ?, maxecamera = ?, maxqlog = ?, maxlog = ?, \
+           engaged_meters = ?, telem_meters = ?, engaged_seconds = ?, drive_seconds = ?, \
+           max_speed = ?, disengage_count = ?, hard_brake_count = ?, hard_accel_count = ? \
          WHERE fullname = ?",
     )
     .bind(start_t)
@@ -650,6 +743,14 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
     .bind(maxecamera)
     .bind(maxqlog)
     .bind(maxlog)
+    .bind(engaged_m)
+    .bind(telem_m)
+    .bind(engaged_s)
+    .bind(drive_s)
+    .bind(max_speed)
+    .bind(disengage)
+    .bind(hard_brake)
+    .bind(hard_accel)
     .bind(&fullname)
     .execute(&state.pool)
     .await?;

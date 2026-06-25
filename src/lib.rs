@@ -78,6 +78,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices/{dongle_id}/location", get(api::v1::device_location))
         // user browse
         .route("/v1/me/devices", get(api::v1::my_devices))
+        .route("/v1/me/stats", get(api::v1::my_stats))
         .route("/v1/me/unpaired_devices", get(api::v1::unpaired_devices))
         .route("/v1/devices/{dongle_id}/claim", post(api::v1::claim_device))
         .route("/v1/devices/{dongle_id}/sync", post(api::devsync::sync_now))

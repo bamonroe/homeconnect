@@ -220,6 +220,59 @@ pub async fn device_stats(
     Ok(Json(json!({ "all": all, "week": all })))
 }
 
+/// GET /v1/me/stats — all-time driving stats across the user's devices (autonomy,
+/// engagement, hard events). Aggregated from the per-route drive stats.
+pub async fn my_stats(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    #[derive(sqlx::FromRow, Default)]
+    struct Agg {
+        routes: i64,
+        miles: f64,
+        drive_s: f64,
+        engaged_m: f64,
+        telem_m: f64,
+        max_speed: f64,
+        disengage: i64,
+        hard_brake: i64,
+        hard_accel: i64,
+    }
+    let a: Agg = sqlx::query_as(
+        "SELECT COUNT(*) AS routes, COALESCE(SUM(length),0) AS miles, \
+                COALESCE(SUM(drive_seconds),0) AS drive_s, COALESCE(SUM(engaged_meters),0) AS engaged_m, \
+                COALESCE(SUM(telem_meters),0) AS telem_m, COALESCE(MAX(max_speed),0) AS max_speed, \
+                COALESCE(SUM(disengage_count),0) AS disengage, \
+                COALESCE(SUM(hard_brake_count),0) AS hard_brake, \
+                COALESCE(SUM(hard_accel_count),0) AS hard_accel \
+         FROM routes \
+         WHERE maxqlog != -1 AND device_dongle_id IN ( \
+            SELECT dongle_id FROM devices WHERE owner_id = ? OR ? = 1 \
+            UNION SELECT device_dongle_id FROM authorized_users WHERE user_id = ?)",
+    )
+    .bind(user.id)
+    .bind(user.is_admin)
+    .bind(user.id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or_default();
+
+    let engaged_mi = a.engaged_m / METERS_PER_MILE;
+    Ok(Json(json!({
+        "routes": a.routes,
+        "miles": a.miles,
+        "drive_hours": a.drive_s / 3600.0,
+        "engaged_miles": engaged_mi,
+        "autonomy": if a.telem_m > 0.0 { 100.0 * a.engaged_m / a.telem_m } else { 0.0 },
+        "disengagements": a.disengage,
+        "disengagements_per_100mi": if engaged_mi > 0.0 { a.disengage as f64 / engaged_mi * 100.0 } else { 0.0 },
+        "max_speed": a.max_speed,
+        "avg_speed": if a.drive_s > 0.0 { (a.telem_m / a.drive_s) * MPH_PER_MS } else { 0.0 },
+        "hard_brake": a.hard_brake,
+        "hard_accel": a.hard_accel,
+    })))
+}
+
 // ---- user browse endpoints --------------------------------------------
 
 fn device_json(d: &Device, user: &User, public_url: &str) -> Value {
@@ -307,11 +360,22 @@ struct RouteRow {
     git_commit: String,
     is_public: i64,
     created_at: i64,
+    engaged_meters: f64,
+    telem_meters: f64,
+    engaged_seconds: f64,
+    drive_seconds: f64,
+    max_speed: f64,
+    disengage_count: i64,
+    hard_brake_count: i64,
+    hard_accel_count: i64,
 }
 
 fn json_arr(s: &str) -> Value {
     serde_json::from_str(s).unwrap_or_else(|_| json!([]))
 }
+
+const METERS_PER_MILE: f64 = 1609.344;
+const MPH_PER_MS: f64 = 1.0 / 0.44704;
 
 fn route_json(r: &RouteRow, public_url: &str, sig: &str) -> Value {
     json!({
@@ -339,6 +403,17 @@ fn route_json(r: &RouteRow, public_url: &str, sig: &str) -> Value {
         "git_commit": r.git_commit,
         "is_public": r.is_public != 0,
         "create_time": r.created_at,
+        // Derived drive stats.
+        "autonomy": if r.telem_meters > 0.0 { 100.0 * r.engaged_meters / r.telem_meters } else { 0.0 },
+        "engaged_miles": r.engaged_meters / METERS_PER_MILE,
+        "telem_miles": r.telem_meters / METERS_PER_MILE,
+        "drive_seconds": r.drive_seconds,
+        "engaged_seconds": r.engaged_seconds,
+        "max_speed": r.max_speed,
+        "avg_speed": if r.drive_seconds > 0.0 { (r.telem_meters / r.drive_seconds) * MPH_PER_MS } else { 0.0 },
+        "disengage_count": r.disengage_count,
+        "hard_brake_count": r.hard_brake_count,
+        "hard_accel_count": r.hard_accel_count,
         "url": format!("{public_url}/connectdata/{}", r.fullname.replace('|', "/")),
         "qcamera_m3u8": format!("{public_url}/v1/route/{}/qcamera.m3u8", r.fullname),
         "share_sig": sig,
