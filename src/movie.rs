@@ -361,9 +361,11 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
     let lead = if have_audio { av_lead(&a_paths[0]).await } else { 0.0 };
 
     let ok = if cam == "qcamera" {
-        // Already H.264 + AAC interleaved in MPEG-TS (A/V offset preserved) — just
-        // remux to a faststart MP4.
-        run(state, qcamera_copy_args(&v_in, &tmp_s)).await
+        // qcamera.ts is H.264+AAC, but concatenating segments yields irregular
+        // (variable-rate) timestamps that make browsers ignore playbackRate — so
+        // re-encode to constant 20fps rather than stream-copy. A/V come from the
+        // same input, so the intrinsic mic offset stays aligned.
+        run(state, qcamera_args(&v_in, &tmp_s)).await
     } else {
         // Encode HEVC → H.264 per the configured encode settings; prefer the
         // selected GPU, fall back to CPU.
@@ -459,11 +461,17 @@ async fn record(state: &AppState, fullname: &str, cam: &str, seg_count: i64, byt
     .await;
 }
 
-/// qcamera: copy the concatenated H.264 + AAC into a faststart MP4.
-fn qcamera_copy_args(v_in: &str, out: &str) -> Vec<String> {
+/// qcamera: re-encode the concatenated H.264+AAC to a constant-20fps MP4 (a plain
+/// stream copy would be variable-rate across segment boundaries, which breaks
+/// browser playbackRate). Video + audio come from the one input so the mic offset
+/// stays aligned. CPU libx264 — the qcamera frame is small, so it's cheap.
+fn qcamera_args(v_in: &str, out: &str) -> Vec<String> {
     [
-        "-nostdin", "-y", "-i", v_in,
-        "-c", "copy", "-bsf:a", "aac_adtstoasc",
+        "-nostdin", "-y", "-fflags", "+genpts", "-i", v_in,
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+        "-vsync", "cfr", "-r", FPS,
+        "-c:a", "aac", "-b:a", "96k",
         "-movflags", "+faststart", out,
     ]
     .iter()
