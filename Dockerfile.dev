@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         npm \
         pkg-config \
         ca-certificates \
+        openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a matching user so cargo writes are owned by the host user.

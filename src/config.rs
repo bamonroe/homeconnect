@@ -22,6 +22,18 @@ pub struct Config {
     /// VAAPI DRM render node for GPU transcoding (e.g. `/dev/dri/renderD129`).
     /// `None` → CPU (libx264). GPU failures fall back to CPU per-transcode.
     pub vaapi_device: Option<String>,
+    /// SSH-pull sync: fetch drives off the device over SSH (the device's uploader
+    /// can't be repointed at us — see CLAUDE.md). Master switch; the primary
+    /// trigger is the device's athena connection (event-driven).
+    pub sync_enabled: bool,
+    /// Periodic sync interval (seconds) — each tick pulls from any device that's
+    /// currently online (cheap: a no-op `find` when nothing's new). Complements
+    /// the connect trigger; covers a continuously-connected device. 0 = disable
+    /// the loop (connect trigger only).
+    pub sync_interval_secs: u64,
+    /// Whether the background pass also pulls full-res cameras + rlog (14G+);
+    /// off by default — full-res is pulled on demand per route.
+    pub sync_fullres: bool,
 }
 
 impl Config {
@@ -41,6 +53,9 @@ impl Config {
                 s if s.is_empty() => None,
                 s => Some(s),
             },
+            sync_enabled: env_or("HC_SYNC_ENABLED", "true").parse().unwrap_or(true),
+            sync_interval_secs: env_or("HC_SYNC_INTERVAL_SECS", "60").parse().unwrap_or(60),
+            sync_fullres: env_or("HC_SYNC_FULLRES", "false").parse().unwrap_or(false),
         }
     }
 
@@ -55,6 +70,11 @@ impl Config {
 
     pub fn transcode_dir(&self) -> PathBuf {
         self.data_dir.join("transcode")
+    }
+
+    /// Directory holding homeconnect's device SSH keypair.
+    pub fn ssh_dir(&self) -> PathBuf {
+        self.data_dir.join("ssh")
     }
 }
 

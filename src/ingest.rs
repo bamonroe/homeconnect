@@ -41,6 +41,50 @@ async fn store(state: &AppState, dongle: &str, key: &str, body: &[u8]) -> AppRes
     Ok(StatusCode::CREATED)
 }
 
+/// Ingest one already-fetched segment file. Shared by the HTTP upload handler
+/// (`upload_driving`) and the SSH puller (`devsync`): store the blob, then parse
+/// (qlog) or register the file's URL (camera/rlog) — synchronously, so the caller
+/// learns the outcome. Idempotent: re-ingesting an existing blob returns
+/// `Forbidden` from `store`, which the puller treats as "already have it".
+pub async fn ingest_segment_file(
+    state: &AppState,
+    dongle: &str,
+    timestamp: &str,
+    segment: i64,
+    file: &str,
+    body: &[u8],
+) -> AppResult<StatusCode> {
+    let key = blob_key(dongle, timestamp, segment, file);
+    let status = store(state, dongle, &key, body).await?;
+    register_segment_file(state, dongle, timestamp, segment, file, body).await?;
+    Ok(status)
+}
+
+/// Register an already-stored segment file into the DB without (re)storing the
+/// blob: parse the qlog into route/segment rows + artifacts, or set the file's
+/// `*_url` column. Used by `devsync` to reconcile blobs that are on disk but were
+/// never parsed (e.g. a legacy manual import), and by `ingest_segment_file`.
+/// For non-qlog files the `body` is unused (only the URL is registered).
+pub async fn register_segment_file(
+    state: &AppState,
+    dongle: &str,
+    timestamp: &str,
+    segment: i64,
+    file: &str,
+    body: &[u8],
+) -> AppResult<()> {
+    if file.contains("qlog") {
+        // parse_and_store also sets the segment's `qlog_url` (and any sibling cam
+        // URLs already on disk), so devsync can key "parsed?" on `qlog_url` —
+        // independent of whether the drive had a GPS fix.
+        crate::parse::parse_and_store(state, dongle, timestamp, segment, file, body).await?;
+    } else {
+        crate::parse::set_segment_file(state, dongle, timestamp, segment, file).await?;
+        let _ = crate::parse::recompute_route(state, dongle, timestamp).await;
+    }
+    Ok(())
+}
+
 /// PUT /connectincoming/:dongle/:timestamp/:segment/:file — driving-log segment.
 pub async fn upload_driving(
     State(state): State<AppState>,

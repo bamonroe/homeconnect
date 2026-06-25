@@ -29,4 +29,5 @@ pub struct Device {
     pub last_gps_lng: f64,
     pub last_gps_time: i64,
     pub created_at: i64,
+    pub last_addr: String,
 }

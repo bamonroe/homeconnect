@@ -64,6 +64,56 @@ pub async fn run_retention(
     Ok(Json(json!({ "deleted": deleted })))
 }
 
+/// GET /v1/admin/sync — automatic-sync on/off + loop interval.
+pub async fn get_sync(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    Ok(Json(json!({
+        "enabled": crate::devsync::is_enabled(&state).await,
+        "interval_secs": crate::devsync::get_interval(&state).await,
+        "types": crate::devsync::get_sync_types(&state).await,
+        "all_types": crate::devsync::all_types(),
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct SyncSettings {
+    pub enabled: Option<bool>,
+    pub interval_secs: Option<u64>,
+    pub types: Option<Vec<String>>,
+}
+
+/// POST /v1/admin/sync — update the on/off toggle and/or loop interval (runtime;
+/// persists). Either field may be omitted.
+pub async fn set_sync(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<SyncSettings>,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    if let Some(on) = req.enabled {
+        crate::devsync::set_enabled(&state, on).await?;
+        tracing::info!(user = %user.username, "sync {}", if on { "enabled" } else { "disabled" });
+    }
+    if let Some(secs) = req.interval_secs {
+        crate::devsync::set_interval(&state, secs).await?;
+        tracing::info!(user = %user.username, "sync interval set to {secs}s");
+    }
+    if let Some(types) = &req.types {
+        crate::devsync::set_sync_types(&state, types).await?;
+        tracing::info!(user = %user.username, "sync types set to {:?}", types);
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "enabled": crate::devsync::is_enabled(&state).await,
+        "interval_secs": crate::devsync::get_interval(&state).await,
+        "types": crate::devsync::get_sync_types(&state).await,
+        "all_types": crate::devsync::all_types(),
+    })))
+}
+
 /// GET /v1/admin/transcode — current device + the selectable list.
 pub async fn get_transcode(
     State(state): State<AppState>,

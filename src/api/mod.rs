@@ -1,3 +1,4 @@
+pub mod devsync;
 pub mod manage;
 pub mod onboard;
 pub mod settings;

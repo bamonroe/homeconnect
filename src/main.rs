@@ -22,9 +22,12 @@ async fn main() -> anyhow::Result<()> {
         return run_cli(&state, &args[1..]).await;
     }
 
-    // Background: mark stale devices offline + enforce retention.
+    // Background: mark stale devices offline + enforce retention + pull drives
+    // off the device over SSH (the uploader can't be repointed at us).
     athena::spawn_reaper(state.clone());
     retention::spawn(state.clone());
+    homeconnect::devsync::spawn_workers(state.clone());
+    homeconnect::devsync::spawn(state.clone());
 
     let app = router(state.clone());
     let listener = tokio::net::TcpListener::bind(&state.config.bind).await?;
@@ -58,6 +61,10 @@ async fn run_cli(state: &AppState, args: &[String]) -> anyhow::Result<()> {
         "reparse" => {
             let n = homeconnect::parse::reparse_all(state).await?;
             println!("reparsed {n} segments");
+            Ok(())
+        }
+        "device-pubkey" => {
+            println!("{}", homeconnect::device_ssh::public_key(state).await?);
             Ok(())
         }
         other => {

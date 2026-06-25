@@ -1,6 +1,7 @@
 use crate::athena::ConnectionManager;
 use crate::config::Config;
 use crate::storage::BlobStore;
+use crate::sync_queue::SyncQueue;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
@@ -10,4 +11,5 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub blobs: BlobStore,
     pub athena: ConnectionManager,
+    pub sync_queue: SyncQueue,
 }

@@ -27,7 +27,13 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg ca-certificates libva2 vainfo \
         mesa-va-drivers intel-media-va-driver \
+        openssh-client \
     && rm -rf /var/lib/apt/lists/*
+# The container runs as uid 1000 (see compose). ssh-keygen/ssh call getpwuid(),
+# which fails ("No user exists for uid 1000") without a passwd entry — so create
+# one. HOME points at a writable dir for OpenSSH's bookkeeping.
+RUN useradd -u 1000 -m -d /home/app -s /usr/sbin/nologin app
+ENV HOME=/home/app
 WORKDIR /app
 COPY --from=builder /usr/local/bin/homeconnect /usr/local/bin/homeconnect
 COPY --from=builder /build/web/dist /app/web/dist

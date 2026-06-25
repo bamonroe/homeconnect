@@ -10,6 +10,8 @@ pub mod auth;
 pub mod cereal;
 pub mod config;
 pub mod db;
+pub mod device_ssh;
+pub mod devsync;
 pub mod error;
 pub mod ingest;
 pub mod models;
@@ -18,6 +20,7 @@ pub mod retention;
 pub mod serve;
 pub mod state;
 pub mod storage;
+pub mod sync_queue;
 pub mod transcode;
 
 use axum::routing::{get, post, put};
@@ -39,6 +42,7 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         pool,
         blobs,
         athena: athena::ConnectionManager::default(),
+        sync_queue: sync_queue::SyncQueue::default(),
     })
 }
 
@@ -75,10 +79,13 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/me/devices", get(api::v1::my_devices))
         .route("/v1/me/unpaired_devices", get(api::v1::unpaired_devices))
         .route("/v1/devices/{dongle_id}/claim", post(api::v1::claim_device))
+        .route("/v1/devices/{dongle_id}/sync", post(api::devsync::sync_now))
+        .route("/v1/sync/queue", get(api::devsync::queue_stats))
         // admin: retention policy
         .route("/v1/admin/retention", get(api::settings::get_retention).post(api::settings::set_retention))
         .route("/v1/admin/retention/run", post(api::settings::run_retention))
         .route("/v1/admin/transcode", get(api::settings::get_transcode).post(api::settings::set_transcode))
+        .route("/v1/admin/sync", get(api::settings::get_sync).post(api::settings::set_sync))
         .route("/v1/devices/{dongle_id}/routes_segments", get(api::v1::routes_segments))
         .route("/v1/route/{fullname}/download", get(api::manage::download))
         .route("/v1/route/{fullname}/delete", post(api::manage::delete))

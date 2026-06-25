@@ -22,10 +22,12 @@ const PING_INTERVAL_SECS: u64 = 10;
 /// A device is considered offline if we haven't heard from it in this long.
 const OFFLINE_AFTER_SECS: i64 = 30;
 
-/// Tracks which dongles currently hold an open athena socket.
+/// Tracks which dongles currently hold an open athena socket, and which have a
+/// sync in flight (so a connect-triggered pull can't pile up on reconnect flaps).
 #[derive(Clone, Default)]
 pub struct ConnectionManager {
     inner: Arc<Mutex<HashMap<String, ()>>>,
+    syncing: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 impl ConnectionManager {
@@ -38,6 +40,13 @@ impl ConnectionManager {
     pub async fn is_connected(&self, dongle: &str) -> bool {
         self.inner.lock().await.contains_key(dongle)
     }
+    /// Claim the sync slot for a dongle; returns false if one is already running.
+    pub async fn try_begin_sync(&self, dongle: &str) -> bool {
+        self.syncing.lock().await.insert(dongle.to_string())
+    }
+    pub async fn end_sync(&self, dongle: &str) {
+        self.syncing.lock().await.remove(dongle);
+    }
 }
 
 /// GET /ws/v2/:dongle_id (and /ws/:dongle_id) — device-authenticated upgrade.
@@ -45,6 +54,7 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     Path(dongle_id): Path<String>,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     auth: Auth,
 ) -> Result<Response, AppError> {
     // The athena socket is device-only: the token's identity must be this dongle.
@@ -55,13 +65,43 @@ pub async fn ws_handler(
         return Err(AppError::Forbidden("token does not match dongle".into()));
     }
 
+    // Record the address the device reached us from (Caddy sets X-Forwarded-For)
+    // — its tailnet IP, used as the SSH target for device management.
+    if let Some(addr) = client_addr(&headers) {
+        let _ = sqlx::query("UPDATE devices SET last_addr = ? WHERE dongle_id = ?")
+            .bind(&addr)
+            .bind(&dongle_id)
+            .execute(&state.pool)
+            .await;
+    }
+
     Ok(ws.on_upgrade(move |socket| handle_socket(socket, dongle_id, state)))
+}
+
+/// First IP from X-Forwarded-For (set by the reverse proxy).
+fn client_addr(headers: &axum::http::HeaderMap) -> Option<String> {
+    let xff = headers.get("x-forwarded-for")?.to_str().ok()?;
+    let ip = xff.split(',').next()?.trim();
+    if ip.is_empty() {
+        None
+    } else {
+        Some(ip.to_string())
+    }
 }
 
 async fn handle_socket(socket: WebSocket, dongle_id: String, state: AppState) {
     tracing::info!(dongle = %dongle_id, "athena connected");
     state.athena.connected(&dongle_id).await;
     mark_online(&state, &dongle_id, true).await;
+
+    // The device just came online (e.g. drove home and rejoined wifi) — pull any
+    // new drives now. Spawned so the ws keeps up its ping loop; `trigger`
+    // self-gates on the runtime sync toggle and a per-dongle in-flight guard.
+    {
+        let st = state.clone();
+        let dg = dongle_id.clone();
+        tokio::spawn(async move { crate::devsync::trigger(&st, &dg).await });
+    }
 
     let (mut sender, mut receiver) = {
         use futures_util::StreamExt;
