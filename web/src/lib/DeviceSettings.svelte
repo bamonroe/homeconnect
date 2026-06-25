@@ -51,6 +51,15 @@
 
   let groups = $derived(dp ? [...new Set(dp.specs.map((s) => s.group))] : []);
 
+  // A conditional setting is active only when its controlling param has an
+  // enabling value (matches how sunnypilot greys these out).
+  function active(s) {
+    if (!s.depends_on) return true;
+    // Unset params read as '' — treat as '0' (off/default) for the condition.
+    const cur = dp.values[s.depends_on.key] || '0';
+    return s.depends_on.values.includes(cur);
+  }
+
   $effect(() => { loadDevices(); });
 </script>
 
@@ -88,28 +97,29 @@
       <div class="card">
         <h3>{g}</h3>
         {#each dp.specs.filter((s) => s.group === g) as s}
+          {@const on = active(s)}
           {#if s.kind === 'info'}
             <div class="drow"><span>{s.label}</span><span class="muted">{dp.values[s.key] || '—'}</span></div>
           {:else if s.kind === 'bool'}
-            <label class="drow">
+            <label class="drow" class:dim={!on}>
               <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
-              <input type="checkbox" checked={dp.values[s.key] === '1'} disabled={busy || !dp.online}
+              <input type="checkbox" checked={dp.values[s.key] === '1'} disabled={busy || !dp.online || !on}
                 onchange={(e) => setParam(s.key, e.currentTarget.checked ? '1' : '0')} />
             </label>
           {:else if s.kind === 'enum'}
-            <label class="drow">
+            <label class="drow" class:dim={!on}>
               <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
-              <select value={dp.values[s.key] ?? ''} disabled={busy || !dp.online}
+              <select value={dp.values[s.key] ?? ''} disabled={busy || !dp.online || !on}
                 onchange={(e) => setParam(s.key, e.currentTarget.value)}>
                 {#each s.options as o}<option value={o.value}>{o.label}</option>{/each}
               </select>
             </label>
           {:else if s.kind === 'int'}
-            <label class="drow">
+            <label class="drow" class:dim={!on}>
               <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
               <span class="num">
                 <input type="number" min={s.min} max={s.max} step={s.step || 1}
-                  value={dp.values[s.key] ?? ''} disabled={busy || !dp.online}
+                  value={dp.values[s.key] ?? ''} disabled={busy || !dp.online || !on}
                   onchange={(e) => setParam(s.key, e.currentTarget.value)} />
                 {#if s.unit}<span class="muted small">{s.unit}</span>{/if}
               </span>
@@ -136,6 +146,7 @@
   .drow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
   .drow:last-child { border-bottom: none; }
   .drow input, .drow select { width: auto; flex: none; }
+  .dim { opacity: 0.4; }
   .num { display: inline-flex; align-items: center; gap: 6px; }
   .num input { width: 80px; text-align: right; }
 </style>

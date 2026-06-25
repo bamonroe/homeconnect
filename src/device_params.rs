@@ -51,22 +51,37 @@ pub struct Spec {
     pub step: i64,
     /// Optional unit suffix shown in the UI for `Int` (e.g. "%", "s").
     pub unit: &'static str,
+    /// Conditional: this setting is only active when param `dep_key`'s current
+    /// value is one of `dep_values`. Empty `dep_key` = always active.
+    pub dep_key: &'static str,
+    pub dep_values: &'static [&'static str],
 }
 
 // Concise constructors keep the (large) allowlist readable.
 const fn b(key: &'static str, group: &'static str, label: &'static str, help: &'static str) -> Spec {
-    Spec { key, group, label, kind: Kind::Bool, help, options: &[], min: 0, max: 0, step: 0, unit: "" }
+    Spec { key, group, label, kind: Kind::Bool, help, options: &[], min: 0, max: 0, step: 0, unit: "",
+        dep_key: "", dep_values: &[] }
 }
 const fn e(key: &'static str, group: &'static str, label: &'static str, help: &'static str,
     options: &'static [(&'static str, &'static str)]) -> Spec {
-    Spec { key, group, label, kind: Kind::Enum, help, options, min: 0, max: 0, step: 0, unit: "" }
+    Spec { key, group, label, kind: Kind::Enum, help, options, min: 0, max: 0, step: 0, unit: "",
+        dep_key: "", dep_values: &[] }
 }
 const fn int_(key: &'static str, group: &'static str, label: &'static str, help: &'static str,
     min: i64, max: i64, step: i64, unit: &'static str) -> Spec {
-    Spec { key, group, label, kind: Kind::Int, help, options: &[], min, max, step, unit }
+    Spec { key, group, label, kind: Kind::Int, help, options: &[], min, max, step, unit,
+        dep_key: "", dep_values: &[] }
 }
 const fn info(key: &'static str, group: &'static str, label: &'static str) -> Spec {
-    Spec { key, group, label, kind: Kind::Info, help: "", options: &[], min: 0, max: 0, step: 0, unit: "" }
+    Spec { key, group, label, kind: Kind::Info, help: "", options: &[], min: 0, max: 0, step: 0, unit: "",
+        dep_key: "", dep_values: &[] }
+}
+/// Wrap a spec with a conditional dependency: only active when `key`'s value is
+/// in `values`.
+const fn dep(mut s: Spec, key: &'static str, values: &'static [&'static str]) -> Spec {
+    s.dep_key = key;
+    s.dep_values = values;
+    s
 }
 
 /// The allowlist. Reversible, user-facing sunnypilot/openpilot settings only —
@@ -89,7 +104,8 @@ pub const SPECS: &[Spec] = &[
     b("SmartCruiseControlVision", "Cruise", "Vision curve slowing", "Slow for curves the camera sees."),
     b("SmartCruiseControlMap", "Cruise", "Map curve/speed slowing", "Use offline map data to slow for curves/limits."),
     b("CustomAccIncrementsEnabled", "Cruise", "Custom ACC speed steps", "Use custom set-speed increments."),
-    int_("CustomAccShortPressIncrement", "Cruise", "ACC short-press step", "Speed change per short button press.", 1, 10, 1, ""),
+    dep(int_("CustomAccShortPressIncrement", "Cruise", "ACC short-press step", "Speed change per short button press.", 1, 10, 1, ""),
+        "CustomAccIncrementsEnabled", &["1"]),
 
     // ── Speed limits ─────────────────────────────────────────────────────────
     e("SpeedLimitMode", "Speed limits", "Speed limit control", "How posted limits are used.",
@@ -98,22 +114,31 @@ pub const SPECS: &[Spec] = &[
         &[("0", "Car only"), ("1", "Map only"), ("2", "Car first"), ("3", "Map first"), ("4", "Combined")]),
     e("SpeedLimitOffsetType", "Speed limits", "Speed limit offset type", "How the offset is applied.",
         &[("0", "None"), ("1", "Fixed"), ("2", "Percent")]),
-    int_("SpeedLimitValueOffset", "Speed limits", "Speed limit offset", "Amount to add to the posted limit.", -30, 30, 1, ""),
+    dep(int_("SpeedLimitValueOffset", "Speed limits", "Speed limit offset", "Amount to add to the posted limit.", -30, 30, 1, ""),
+        "SpeedLimitOffsetType", &["1", "2"]),
 
     // ── Steering (MADS) ──────────────────────────────────────────────────────
     b("Mads", "Steering (MADS)", "Enable MADS", "Modified Assistive Driving — steering independent of cruise."),
-    b("MadsMainCruiseAllowed", "Steering (MADS)", "Engage with main cruise", "Allow MADS to engage from the MAIN cruise button."),
-    b("MadsUnifiedEngagementMode", "Steering (MADS)", "Unified engagement", "Engage lateral + longitudinal together."),
-    e("MadsSteeringMode", "Steering (MADS)", "On brake pedal", "What steering does when you brake.",
+    dep(b("MadsMainCruiseAllowed", "Steering (MADS)", "Engage with main cruise", "Allow MADS to engage from the MAIN cruise button."),
+        "Mads", &["1"]),
+    dep(b("MadsUnifiedEngagementMode", "Steering (MADS)", "Unified engagement", "Engage lateral + longitudinal together."),
+        "Mads", &["1"]),
+    dep(e("MadsSteeringMode", "Steering (MADS)", "On brake pedal", "What steering does when you brake.",
         &[("0", "Remain active"), ("1", "Pause"), ("2", "Disengage")]),
-    b("NeuralNetworkLateralControl", "Steering (MADS)", "Neural-net lateral control", "Use the NNLC steering model when available."),
-    b("EnforceTorqueControl", "Steering (MADS)", "Enforce torque control", "Force torque-based lateral control."),
+        "Mads", &["1"]),
+    dep(b("NeuralNetworkLateralControl", "Steering (MADS)", "Neural-net lateral control", "Use the NNLC steering model when available."),
+        "EnforceTorqueControl", &["0"]),
+    dep(b("EnforceTorqueControl", "Steering (MADS)", "Enforce torque control", "Force torque-based lateral control."),
+        "NeuralNetworkLateralControl", &["0"]),
     b("BlinkerPauseLateralControl", "Steering (MADS)", "Pause steering on blinker", "Hand back steering while the turn signal is on."),
-    int_("BlinkerMinLateralControlSpeed", "Steering (MADS)", "Min speed to pause on blinker", "Below this speed, the blinker pauses steering.", 0, 255, 5, ""),
-    int_("BlinkerLateralReengageDelay", "Steering (MADS)", "Post-blinker delay", "Wait this long after the blinker before re-steering.", 0, 10, 1, "s"),
+    dep(int_("BlinkerMinLateralControlSpeed", "Steering (MADS)", "Min speed to pause on blinker", "Below this speed, the blinker pauses steering.", 0, 255, 5, ""),
+        "BlinkerPauseLateralControl", &["1"]),
+    dep(int_("BlinkerLateralReengageDelay", "Steering (MADS)", "Post-blinker delay", "Wait this long after the blinker before re-steering.", 0, 10, 1, "s"),
+        "BlinkerPauseLateralControl", &["1"]),
     e("AutoLaneChangeTimer", "Steering (MADS)", "Auto lane change", "Delay before an auto lane change (no steering nudge needed when set).",
         &[("-1", "Off"), ("0", "Nudge"), ("1", "Nudgeless"), ("2", "0.5 s"), ("3", "1 s"), ("4", "2 s"), ("5", "3 s")]),
-    b("AutoLaneChangeBsmDelay", "Steering (MADS)", "Blind-spot lane-change delay", "Wait on blind-spot monitor before auto lane change."),
+    dep(b("AutoLaneChangeBsmDelay", "Steering (MADS)", "Blind-spot lane-change delay", "Wait on blind-spot monitor before auto lane change."),
+        "AutoLaneChangeTimer", &["1", "2", "3", "4", "5"]),
 
     // ── Display & alerts ─────────────────────────────────────────────────────
     b("IsLdwEnabled", "Display & alerts", "Lane-departure warnings", "Warn on lane drift when not engaged."),
@@ -134,10 +159,11 @@ pub const SPECS: &[Spec] = &[
         &[("0", "Off"), ("1", "Bottom"), ("2", "Right"), ("3", "Right & bottom")]),
     e("OnroadScreenOffBrightness", "Display & alerts", "Onroad brightness", "Screen brightness while driving.",
         &[("0", "Auto"), ("1", "Auto (dark)"), ("2", "Screen off"), ("7", "25%"), ("12", "50%"), ("17", "75%"), ("22", "100%")]),
-    e("OnroadScreenOffTimer", "Display & alerts", "Onroad brightness delay", "Dim the screen after this long onroad.",
+    dep(e("OnroadScreenOffTimer", "Display & alerts", "Onroad brightness delay", "Dim the screen after this long onroad.",
         &[("3", "3 s"), ("5", "5 s"), ("7", "7 s"), ("10", "10 s"), ("15", "15 s"), ("30", "30 s"),
           ("60", "1 min"), ("120", "2 min"), ("180", "3 min"), ("240", "4 min"), ("300", "5 min"),
           ("360", "6 min"), ("420", "7 min"), ("480", "8 min"), ("540", "9 min"), ("600", "10 min")]),
+        "OnroadScreenOffBrightness", &["2", "7", "12", "17", "22"]),
     int_("InteractivityTimeout", "Display & alerts", "Settings UI timeout", "Auto-close settings after inactivity (0 = default).",
         0, 120, 10, "s"),
 
@@ -162,11 +188,13 @@ pub const SPECS: &[Spec] = &[
     b("GsmMetered", "Connectivity & updates", "Cellular metered", "Treat the SIM connection as metered."),
     b("OnroadUploads", "Connectivity & updates", "Upload while driving", "Allow uploads during drives (not just parked)."),
     b("SunnylinkEnabled", "Connectivity & updates", "sunnylink enabled", "Connect to sunnylink."),
-    b("DisableUpdates", "Connectivity & updates", "Pause software updates", "Stop fetching/installing updates."),
+    dep(b("DisableUpdates", "Connectivity & updates", "Pause software updates", "Stop fetching/installing updates."),
+        "ShowAdvancedControls", &["1"]),
 
     // ── Developer ────────────────────────────────────────────────────────────
     b("ShowAdvancedControls", "Developer", "Show advanced controls", "Reveal advanced settings on the device."),
-    b("QuickBootToggle", "Developer", "Quickboot mode", "Faster boot (skips some checks)."),
+    dep(b("QuickBootToggle", "Developer", "Quickboot mode", "Faster boot (skips some checks)."),
+        "DisableUpdates", &["1"]),
 
     // ── Device (read-only) ───────────────────────────────────────────────────
     info("Version", "Device", "Version"),

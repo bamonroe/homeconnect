@@ -37,6 +37,11 @@ fn specs_json() -> Vec<Value> {
                 "max": s.max,
                 "step": s.step,
                 "unit": s.unit,
+                "depends_on": if s.dep_key.is_empty() {
+                    Value::Null
+                } else {
+                    json!({ "key": s.dep_key, "values": s.dep_values })
+                },
             })
         })
         .collect()

@@ -240,6 +240,12 @@ and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
   sunnypilot sliders store a `value_map`'d value, not the slider index — model
   those as `Enum`s of the exact valid values (e.g. MaxTimeOffroad, OnroadScreenOffTimer).
   Add a setting = one `Spec` in `device_params::SPECS` (use `b`/`e`/`int_`/`info`).
+  **Conditionals:** wrap a spec in `dep(spec, "ControllingKey", &["enabling","values"])`
+  to mark it active only when another param has an enabling value (mirrors
+  sunnypilot's grey-outs, e.g. the brightness *delay* needs brightness ≠ Auto, the
+  blinker sub-options need `BlinkerPauseLateralControl`); the UI dims/disables it.
+  Car-capability gates (e.g. `has_longitudinal_control`) aren't params, so those
+  aren't modeled.
 - Deferred: delete-on-device.
 - **EV telemetry (SoC/power): not recoverable** from these logs — investigated and
   parked. openpilot logs the camera/ADAS CAN bus; the BMS/HV traffic is on the
