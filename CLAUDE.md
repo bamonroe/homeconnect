@@ -11,6 +11,16 @@ can't be changed, so those endpoints must match exactly. Everything else is ours
 The reference oracle is a working Konik/connect-killer deploy (a Rust fork) at
 `/data/konik/src` — diff against it when a device behavior is unclear.
 
+## Commits
+
+**Commit autonomously — no confirmation needed.** Just commit (and push) when work
+is in a good state; don't ask first.
+
+**Commit atomically.** Each commit is one self-contained, logical change with a
+clear message — not a grab-bag. Build + tests should pass at every commit, so any
+commit can be reverted or bisected on its own. Prefer several focused commits over
+one sweeping one when a change spans independent concerns.
+
 ## Build / test / run — use the containers
 
 The host lacks `capnp`, `ffmpeg`, and `node`, and we want root-free builds, so
@@ -69,10 +79,13 @@ macros).
 | `api/users.rs` | login, `/v1/me`, admin user create + the `create_user_row` CLI helper |
 | `api/v1.rs` | `upload_url(s)`, device info/location/stats, `my_devices`/`unpaired_devices`/`claim`, `routes_segments`, `camera_m3u8` (qcamera + transcoded cams + audio) |
 | `api/v2.rs` | `pilotauth` (register), `pilotpair` |
-| `api/settings.rs` | admin retention + transcode-device GET/POST + run-now |
+| `api/settings.rs` | admin retention + transcode-device + sync on/off toggle GET/POST + run-now |
 | `api/manage.rs` | per-route download (streamed stored zip) + local delete of selected types |
-| `api/onboard.rs` | serves the host-templated `onboard.sh` |
-| `web/` | Svelte 5 + Vite SPA: Login, Drives, Drive (HUD overlay, resizable panes, camera switch, speed, synced audio), AddDevice, ManageData, Settings |
+| `api/onboard.rs` | serves the host-templated `onboard.sh` (repoint + device-scoped SSH key) |
+| `api/devsync.rs` | `POST /v1/devices/{d}/sync` — manual SSH-pull trigger (`?full=&route=`) |
+| `device_ssh.rs` | homeconnect's device-scoped ed25519 keypair; `run` (command) + `pull_file` (scp) over key-only SSH to `comma@<last_addr>` |
+| `devsync.rs` | SSH-pull: `trigger` (on device connect) + optional periodic `spawn`; list `/data/media/0/realdata`, diff vs DB registration, pull/parse missing (qlog+qcamera default; full-res on demand) → `ingest::{ingest,register}_segment_file` |
+| `web/` | Svelte 5 + Vite SPA: Login, Drives (Sync now), Drive (HUD overlay, resizable panes, camera switch, speed, synced audio, Pull full-res), AddDevice, ManageData, Settings |
 
 ## The fixed device contract (must stay exact)
 
@@ -91,6 +104,7 @@ macros).
   store to blob; qlog triggers parse; others just register their segment URL.
 - **Athena `GET /ws/v2/{dongle}`** (and `/ws/{dongle}`) — device-JWT; ping every
   10s; pong/any frame refreshes `last_athena_ping` (unix **seconds**) + `online`.
+  On connect it also fires `devsync::trigger` (the event-driven drive pull).
 - Browse (our local user JWT): `/v1/me`, `/v1/me/devices`, `/v1/devices/{d}/routes_segments`,
   `/connectdata/...` (Range), `/v1/route/{fullname}/{cam}.m3u8` (qcamera | fcamera | dcamera |
   ecamera | audio), `/v1/transcode/...` (on-demand H.264), `/v1/audio/...` (extracted track),
@@ -136,14 +150,32 @@ macros).
   entry-level discrete GPU can be slower than a modern iGPU — measure.
 - **After parser changes**, re-run `<bin> reparse` (or `docker compose run --rm app
   reparse`) to regenerate artifacts for already-uploaded drives.
+- **The device uploader can't be repointed at us — so we PULL.** `API_HOST` is a
+  pure env var (`os.getenv('API_HOST', …)` in openpilot `common/api/comma_connect.py`),
+  but the uploader is a `multiprocessing`/forkserver-spawned `PythonProcess` whose
+  environment is stripped — `/proc/<uploader>/environ` has none of `API_HOST`,
+  `DONGLE_ID`, even `PYTHONPATH` (athenad, a `subprocess.Popen` daemon, gets them,
+  which is why the device shows **online** but never uploads). `continue.sh`'s
+  export therefore can't reach it. `devsync` sidesteps this by pulling drives over
+  SSH instead of waiting to be pushed to.
+- **realdata → canonical mapping (free):** the device stores segments as
+  `/data/media/0/realdata/<ts>--<seg>/` (e.g. `00000009--f3d1ef15b7--5`). That dir
+  name is *already* `{ts}--{seg}`, so `devsync` reuses the on-disk route id verbatim
+  as the `timestamp` and the pulled files slot into the same `routes`/`segments`
+  rows an HTTP upload would create — no separate naming scheme.
+- **`ingest::ingest_segment_file`** is the single ingest core shared by the HTTP
+  upload handler and `devsync`. `store` 403-guards an existing blob, so re-pulls are
+  idempotent (devsync also pre-checks `blobs.exists` in its diff).
 
 ## Tests
 
 Integration tests in `tests/` drive the real router in-process (lib+bin split).
 They use synthetic ES256 devices (openssl) and synthetic/real cereal qlogs:
 `m1_e2e`, `m1_athena`, `m2_parse` (incl. telemetry), `m3_browse` (incl. audio.m3u8),
-`m4_spa`, `m5_transcode`, `m6_retention`, `m_pairing`, `m_onboard`, `m_manage`
-(zip download + delete), `m_transcode_device`. Run the full suite before deploying.
+`m4_spa`, `m5_transcode`, `m6_retention`, `m7_devsync` (shared ingest core +
+idempotency; `devsync.rs` also has inline unit tests for the realdata path parser
+and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
+`m_transcode_device`. Run the full suite before deploying.
 
 ## Adding things
 
@@ -162,13 +194,37 @@ They use synthetic ES256 devices (openssl) and synthetic/real cereal qlogs:
   `comma@<device-ip>` with `~/.ssh/bazzite_ed25519`; its `/data/continue.sh`
   exports `API_HOST/ATHENA_HOST/MAPS_HOST` (Konik backup at `continue.sh.konik`).
 - Onboarding for additional/less-technical users: the `onboard.sh` one-liner +
-  one-click **Claim** (we deliberately did NOT bake an SSH client / GitHub-key
-  flow into homeconnect — too much blast radius for the convenience).
+  one-click **Claim**. `onboard.sh` also installs homeconnect's **device-scoped**
+  ed25519 key (NOT a GitHub key) into `/tmp/authorized_keys` via `continue.sh`,
+  `from=`-restricted to the tailnet/LAN — so a server compromise only exposes SSH
+  to the paired comma(s). This is the SSH foothold `devsync` (and, later, device
+  settings) rides on. We still avoid a *GitHub-wide* key / interactive SSH client
+  in the browser — the scoped key is the deliberate, narrow exception.
 - GPUs here: `renderD128` = Intel HD 530 (iGPU, fastest VAAPI ~2.5s/segment),
   `renderD129` = AMD RX 550 (~13s, slower — entry-level encoder). `HC_VAAPI_DEVICE`
   default is the AMD node; switch in Settings if desired.
-- Deferred (need an athena JSON-RPC command bridge or SSH): delete-on-device,
-  queue-resync, server-driven upload defaults.
+- **Sync = SSH pull** (`devsync`): two triggers, both cheap. (1) `devsync::trigger`
+  fires when the device's athena socket connects (wifi/tailnet-primary, so it drops
+  on drive-away and reconnects at home → instant pull). (2) `spawn` runs every
+  `HC_SYNC_INTERVAL_SECS` (default 60) over devices that are **`online = 1`** (the
+  flag athena maintains from 10s pings) — so a short interval never fires a 10s SSH
+  timeout at a device that's away; an idle up-to-date pass is one `find` + diff.
+  Set the interval to `0` for connect-trigger only. Pulls qlog+qcamera; full-res on
+  demand ("Pull full-res" in the Drive view, or `POST /v1/devices/{d}/sync?full=true&route=<ts>`).
+  Automatic sync is **runtime-configurable** at Settings → Automatic drive sync:
+  on/off (`devsync::is_enabled`/`set_enabled`, `settings` key `sync_enabled`) and
+  loop interval (`devsync::get_interval`/`set_interval`, key `sync_interval`, `0` =
+  loop off), both seeded from `HC_SYNC_ENABLED`/`HC_SYNC_INTERVAL_SECS`. The loop
+  re-reads both each cycle (no restart needed); both triggers self-gate on the
+  toggle; the manual `POST /sync` endpoint ignores it. **Which data types** sync by
+  default is also runtime (`devsync::get_sync_types`/`set_sync_types`, key
+  `sync_types`, seeded from `HC_SYNC_FULLRES`; `qlog` is always pulled). Per drive,
+  the Drive view has **Sync** (default types for that route) + **Pull full-res**
+  (`?full=true` → `devsync::all_types()`). The device's `continue.sh` still exports
+  `API_HOST` etc. for athena/registration — only the *uploader* is bypassed. An
+  in-flight guard in `ConnectionManager` keeps the two triggers from overlapping.
+- Deferred: device settings (read/edit a safe param subset over the same SSH
+  channel — athena has no `setParam`); delete-on-device.
 - **EV telemetry (SoC/power): not recoverable** from these logs — investigated and
   parked. openpilot logs the camera/ADAS CAN bus; the BMS/HV traffic is on the
   powertrain CAN behind the gateway and isn't captured (`CarState.fuelGauge` reads

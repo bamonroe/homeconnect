@@ -15,7 +15,16 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
 
 - **Drop-in device support** — implements comma's contract (`pilotauth`, athena
   websocket, `upload_url`, `connectincoming`, …). Point the device at this server
-  and it registers, stays online, and uploads.
+  and it registers and stays online.
+- **Drive sync over SSH (pull, not push)** — openpilot's uploader can't actually
+  be repointed at a self-hosted server (its `API_HOST` env var never reaches the
+  forkserver-spawned uploader process), so homeconnect **pulls** instead: it SSHes
+  to the device over a **bespoke, tailnet/LAN-restricted key** (installed by
+  `onboard.sh`, not a GitHub key) and fetches new segments. The pull fires when the
+  device's athena websocket connects (e.g. drives home and rejoins wifi), and a
+  light 60s loop re-checks any device that's **currently online** (reachability is
+  free — athena already tracks it — so the loop never probes a device that's driven
+  away). `qlog`+`qcamera` sync automatically; full-res is pulled on demand per drive.
 - **Drive browsing** — trips parsed from `qlog`s into routes/segments with GPS
   path, mileage, engage/disengage events, and thumbnail sprites.
 - **In-browser playback** — qcamera HLS plus **on-demand HEVC→H.264 transcoding**
@@ -89,9 +98,11 @@ ssh comma@<device-ip> 'curl -fsSL http://homeconnect.bam/onboard.sh | bash -s --
 ```
 
 `onboard.sh` repoints openpilot at this server (patching `/data/continue.sh`,
-which survives openpilot updates) and clears the cached dongle so it
-re-registers. After it reboots and registers, **Claim** it in the UI. (A
-device-signed pairing token via `pilotpair` is also supported.)
+which survives openpilot updates), installs homeconnect's tailnet/LAN-restricted
+SSH key for drive sync, and clears the cached dongle so it re-registers. After it
+reboots and registers, **Claim** it in the UI. (A device-signed pairing token via
+`pilotpair` is also supported.) Drives then sync automatically over SSH, or via
+**Sync now** in the UI.
 
 ## Configuration
 
@@ -108,6 +119,9 @@ All via env (`.env` for secrets):
 | `HC_RETAIN_DAYS` | `30` | keep drives newer than N days (0 = unlimited) |
 | `HC_RETAIN_DRIVES` | `30` | max drives per device (0 = unlimited) |
 | `HC_RETAIN_GB` | `100` | max total storage GB (0 = unlimited) |
+| `HC_SYNC_ENABLED` | `true` | default for the runtime sync toggle (Settings → Automatic drive sync) |
+| `HC_SYNC_INTERVAL_SECS` | `60` | default for the runtime interval (Settings); `0` = connect-trigger only |
+| `HC_SYNC_FULLRES` | `false` | seeds the default synced data types (on → all cameras + rlog; off → Road only). Editable at Settings → Automatic drive sync |
 
 Retention and the transcode device are overridable at runtime from the admin
 **Settings** page (the env values are just defaults).
