@@ -21,6 +21,10 @@
   let marker;
   let hls;
   let audioHls;
+  // Pre-built stitched movies (cam → {ready,bytes,duration}). When the current cam
+  // has one, we play it directly (native audio, no HLS + audio-sync hack).
+  let movies = $state({});
+  let movieMode = $state(false);
 
   let coords = $state([]); // {t, lat, lng, speed}
   let telemetry = $state([]); // {t, speed, gear, lb, rb, brake, gas, steer, engaged}
@@ -258,6 +262,21 @@
   }
 
   function loadVideo() {
+    // A stitched movie exists for this camera → play it natively (audio muxed in),
+    // no HLS, no separate audio track.
+    if (movies[cam]?.ready) {
+      movieMode = true;
+      if (hls) { hls.destroy(); hls = null; }
+      if (audioHls) { audioHls.destroy(); audioHls = null; }
+      if (audioEl) { audioEl.pause(); audioEl.removeAttribute('src'); audioEl.load?.(); }
+      videoEl.muted = false;
+      videoEl.src = api.movieUrl(route.fullname, cam);
+      videoEl.playbackRate = rate;
+      return;
+    }
+    movieMode = false;
+    videoEl.muted = true; // sound comes from the separate audio track
+    videoEl.removeAttribute('src');
     const url = api.camM3u8(route.fullname, cam) + `?sig=${token}`;
     if (hls) {
       hls.destroy();
@@ -281,6 +300,7 @@
   // (muted) video — so the silent driver/full-res cameras have sound without
   // muxing audio into them. Continuous timeline matches the video.
   function loadAudio() {
+    if (movieMode) return; // movie carries its own audio
     const url = api.camM3u8(route.fullname, 'audio') + `?sig=${token}`;
     if (audioHls) { audioHls.destroy(); audioHls = null; }
     if (Hls.isSupported()) {
@@ -294,14 +314,15 @@
   }
 
   function wireAudioSync() {
-    const resync = () => { if (audioEl) audioEl.currentTime = videoEl.currentTime; };
-    videoEl.addEventListener('play', () => { resync(); audioEl?.play().catch(() => {}); });
-    videoEl.addEventListener('pause', () => audioEl?.pause());
+    // No-op in movie mode — the movie has its own muxed audio track.
+    const resync = () => { if (audioEl && !movieMode) audioEl.currentTime = videoEl.currentTime; };
+    videoEl.addEventListener('play', () => { if (movieMode) return; resync(); audioEl?.play().catch(() => {}); });
+    videoEl.addEventListener('pause', () => { if (!movieMode) audioEl?.pause(); });
     videoEl.addEventListener('seeking', resync);
-    videoEl.addEventListener('ratechange', () => { if (audioEl) audioEl.playbackRate = videoEl.playbackRate; });
+    videoEl.addEventListener('ratechange', () => { if (audioEl && !movieMode) audioEl.playbackRate = videoEl.playbackRate; });
     // Drift correction during playback.
     videoEl.addEventListener('timeupdate', () => {
-      if (audioEl && !audioEl.paused && Math.abs(audioEl.currentTime - videoEl.currentTime) > 0.3) {
+      if (!movieMode && audioEl && !audioEl.paused && Math.abs(audioEl.currentTime - videoEl.currentTime) > 0.3) {
         audioEl.currentTime = videoEl.currentTime;
       }
     });
@@ -373,6 +394,11 @@
     videoEl.addEventListener('timeupdate', () => syncMarker(videoEl.currentTime));
     wireAudioSync();
     try {
+      // Which cameras already have a stitched movie (decides the playback path).
+      try {
+        const r = await api.routeMovies(route.fullname);
+        movies = Object.fromEntries(r.movies.map((m) => [m.cam, m]));
+      } catch {}
       await loadArtifacts();
       maybeDraw();
       loadVideo();
@@ -456,6 +482,7 @@
       </div>
       <div class="ctrl">
         <span class="muted">t = {fmtT(curT)}</span>
+        {#if movieMode}<span class="moviebadge" title="Playing the stitched HD movie with muxed audio">▶ HD movie</span>{/if}
         <button class="ghost rate" class:active={showModel} onclick={toggleModel} title="Top-down model view (needs full-res rlog)">Top-down</button>
         <button class="ghost rate" class:active={showOverlay} onclick={toggleOverlay} title="Model overlay on the road video">Overlay</button>
         {#if showOverlay && OVERLAY_CAMS.includes(cam)}
@@ -566,6 +593,7 @@
   .arrow { font-size: 16px; color: #444; }
   .arrow.lit { color: #3fb950; }
   .ctrl { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; }
+  .moviebadge { font-size: 11px; color: #3fb950; border: 1px solid #2ea043; border-radius: 999px; padding: 1px 8px; }
   .rates { display: flex; gap: 4px; }
   .rate { padding: 3px 8px; font-size: 12px; }
   .rate.active { border-color: var(--accent); color: var(--accent); }

@@ -33,6 +33,7 @@
   // Per-drive auto-sync override (defaults to the global default).
   let rs = $state(null); // { types, overridden, default, all_types }
   let auto = $state({});
+  let movies = $state([]); // [{cam, ready, bytes, duration}]
 
   $effect(() => {
     api.routeSync(route.fullname)
@@ -41,7 +42,13 @@
         auto = Object.fromEntries(r.all_types.map((t) => [t, r.types.includes(t)]));
       })
       .catch((e) => { error = e.message; });
+    api.routeMovies(route.fullname)
+      .then((r) => { movies = r.movies; })
+      .catch(() => {});
   });
+
+  const fmtBytes = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
+  let readyMovies = $derived(movies.filter((m) => m.ready));
 
   let autoSel = $derived(rs ? rs.all_types.filter((t) => auto[t]) : []);
   let selected = $derived(types.filter((t) => checked[t.id]).map((t) => t.id));
@@ -179,10 +186,28 @@
       <button disabled={busy || !selPullable.length} onclick={pull}>
         {busy ? 'Working…' : 'Pull from device'}
       </button>
-      <button class="ghost" disabled={!selSynced.length} onclick={download}>Download (.zip)</button>
+      <button class="ghost" disabled={!selSynced.length} onclick={download}>Raw backup (.zip)</button>
       <button class="danger" disabled={busy || !selSynced.length} onclick={delServer}>Delete from server</button>
       <button class="danger ghost" disabled={busy || !selected.length} onclick={delDevice} title="Delete the selected files off the comma to reclaim its storage">Delete from device</button>
     </div>
+
+    {#if readyMovies.length}
+      <hr />
+      <strong>Watchable movies</strong>
+      <p class="muted small">
+        One stitched MP4 per camera with the audio muxed in — plays and shares anywhere, no
+        sync tricks. (The raw backup above is the original device files for archival.)
+      </p>
+      <div class="list">
+        {#each readyMovies as m}
+          <div class="row">
+            <span class="lbl">{TYPE_LABELS[m.cam] ?? m.cam}</span>
+            <span class="badge on">{fmtBytes(m.bytes)}</span>
+            <a class="dl" href={api.movieUrl(route.fullname, m.cam)} download>Download MP4</a>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -207,4 +232,6 @@
   .actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
   .danger { background: #f85149; }
   .danger.ghost { background: transparent; color: #f85149; border-color: #f85149; }
+  .dl { font-size: 12px; color: var(--accent); text-decoration: none; border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; }
+  .dl:hover { border-color: var(--accent); }
 </style>

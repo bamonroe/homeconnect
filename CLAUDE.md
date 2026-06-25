@@ -74,7 +74,8 @@ macros).
 | `cereal/mod.rs` | generated capnp bindings (built by `build.rs` from `vendor/cereal`) |
 | `athena.rs` | device websocket: `ConnectionManager`, 10s ping, online/offline, stale reaper |
 | `serve.rs` | `connectdata` blob serving with HTTP Range (206); transcode + audio serving |
-| `transcode.rs` | HEVC→H.264 (VAAPI or CPU, CPU fallback), audio extract, disk-cached, semaphore-bounded; runtime device selection (`list/current/set_device`); `ffprobe` duration |
+| `transcode.rs` | HEVC→H.264 (VAAPI qp28 or CPU libx264 veryfast/crf23, CPU fallback), audio extract, disk-cached, semaphore-bounded; runtime device selection (`list/current/set_device`); `ffprobe` duration; `clean_cache_tmp` (orphaned `.tmp.ts`/`.part` sweep at startup) |
+| `movie.rs` | Per-drive stitched "movie" artifacts: all of a camera's segments concatenated (ffmpeg `concat:` protocol — raw HEVC + TS byte-concatenate cleanly, no temp) and encoded **once** into a single seekable H.264 MP4 with qcamera's audio muxed in. qcamera = stream copy; HEVC cams encoded (same VAAPI/CPU choice as transcode). Route-level blob `{dongle}_{ts}--movie--{cam}.mp4`; `movies` table (mig 0008) tracks freshness (built `seg_count`). `spawn` runs a 120s `sweep` that builds any drive fully covered by a camera but missing/stale — eager, background. `status` powers the UI; `delete` drops a movie when its source segments are deleted |
 | `retention.rs` | periodic prune by age/count/size; `delete_route`; `load/save_policy` |
 | `api/users.rs` | login, `/v1/me`, admin user create + the `create_user_row` CLI helper |
 | `api/v1.rs` | `upload_url(s)`, device info/location/stats, `my_devices`/`unpaired_devices`/`claim`, `routes_segments`, `camera_m3u8` (qcamera + transcoded cams + audio) |
@@ -141,6 +142,18 @@ macros).
 - **Transcode HLS continuity**: each segment is transcoded independently, so set
   `-output_ts_offset N*60` per segment or the player sees overlapping 0-based
   clips and can't seek (reports ~1 min total).
+- **Transcode size**: the on-demand cache was ~5× bloated by `-preset ultrafast`
+  (and VAAPI `-qp 24`). `veryfast`/`qp28` cut it with no visible quality loss.
+  Real-world full-res road footage is ~12 MB/min at this quality (busy scenes);
+  the driver cam (static interior) compresses far better. Don't trust a single
+  "easy" segment as representative — measure on a real drive.
+- **Movies vs HLS**: a drive plays as dozens of 1-min clips via HLS, with audio
+  (qcamera-only) layered over the silent full-res cams by a JS sync hack. A
+  `movie.rs` artifact stitches+encodes the whole drive once into one MP4 **with
+  audio muxed in**, so the Drive view plays it via a plain `<video src>` (native
+  seek + audio, no hack) when ready and falls back to HLS otherwise. Movies build
+  only when a camera fully covers the drive (no mid-drive gaps), so the continuous
+  movie timeline lines up with the route-relative model/telemetry `t`.
 - **Engagement** = `SelfdriveState.enabled` (NOT `cruiseState.enabled`, the car's
   stock cruise, which is always off on openpilot-longitudinal cars). The UI derives
   engage/disengage events from the continuous telemetry `engaged` field (strictly

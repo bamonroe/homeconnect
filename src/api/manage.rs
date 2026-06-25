@@ -231,6 +231,14 @@ pub async fn delete(
 
         crate::parse::recompute_route(&state, &dongle, &ts).await?;
 
+        // A camera's stitched movie is built from its segments; drop it when those
+        // are deleted so a stale movie isn't served (the sweep rebuilds if re-pulled).
+        for t in &req.types {
+            if crate::movie::MOVIE_CAMS.contains(&t.as_str()) {
+                crate::movie::delete(&state, &dongle, &ts, t).await;
+            }
+        }
+
         // Don't let sync re-pull what was just deleted: pin this drive's sync types
         // to the current effective set minus the deleted types (an explicit
         // per-drive override). The user can re-enable them in Manage data.

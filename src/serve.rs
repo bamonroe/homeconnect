@@ -164,6 +164,39 @@ pub async fn audio(
     serve_file(&path, "video/mp2t", &headers).await
 }
 
+/// GET /v1/route/:fullname/movie/:cam — serve a pre-built, stitched, audio-muxed
+/// MP4 for one camera of a drive (Range-capable). `cam` may be `qcamera.mp4` or
+/// bare `qcamera`. 404 until the background builder has produced it.
+pub async fn movie(
+    State(state): State<AppState>,
+    Path((fullname, cam)): Path<(String, String)>,
+    auth: Option<Auth>,
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    let (dongle, timestamp) = fullname
+        .split_once('|')
+        .ok_or_else(|| AppError::BadRequest("bad route name".into()))?;
+
+    let is_public: Option<(i64,)> = sqlx::query_as("SELECT is_public FROM routes WHERE fullname = ?")
+        .bind(&fullname)
+        .fetch_optional(&state.pool)
+        .await?;
+    if !matches!(is_public, Some((1,))) {
+        let auth = auth.ok_or_else(|| AppError::Unauthorized("login required".into()))?;
+        if !access::can_view_route(&state, &auth, dongle).await? {
+            return Err(AppError::Forbidden("not authorized for this route".into()));
+        }
+    }
+
+    let stem = cam.strip_suffix(".mp4").unwrap_or(&cam);
+    if !crate::movie::MOVIE_CAMS.contains(&stem) {
+        return Err(AppError::BadRequest("unknown camera".into()));
+    }
+    let key = crate::movie::movie_key(dongle, timestamp, stem);
+    let path = state.blobs.path_for(&key);
+    serve_file(&path, "video/mp4", &headers).await
+}
+
 /// Stream a file from disk with HTTP Range support (206 when requested).
 async fn serve_file(path: &std::path::Path, ct: &str, headers: &HeaderMap) -> AppResult<Response> {
     let mut f = match tokio::fs::File::open(path).await {

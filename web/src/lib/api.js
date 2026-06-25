@@ -86,6 +86,10 @@ export const api = {
   // Media URLs (built so the browser can fetch directly, with the share sig).
   camM3u8: (fullname, cam = 'qcamera') =>
     `/v1/route/${encodeURIComponent(fullname)}/${cam}.m3u8`,
+  // Pre-built stitched movies (single MP4 per camera, audio muxed in).
+  routeMovies: (fullname) => req('GET', `/v1/route/${encodeURIComponent(fullname)}/movies`),
+  movieUrl: (fullname, cam) =>
+    `/v1/route/${encodeURIComponent(fullname)}/movie/${cam}.mp4?sig=${getToken()}`,
   // The signed token to append to direct media/artifact fetches.
   sig: () => getToken(),
   // admin: retention

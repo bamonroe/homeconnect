@@ -28,7 +28,13 @@ async fn main() -> anyhow::Result<()> {
     retention::spawn(state.clone());
     homeconnect::devsync::spawn_workers(state.clone());
     homeconnect::devsync::spawn(state.clone());
+    homeconnect::movie::spawn(state.clone()); // build per-drive watchable movies
     homeconnect::transcode::warm(); // probe GPUs once now, not on first Settings load
+    {
+        // Sweep orphaned partial transcode outputs left by an interrupted encode.
+        let s = state.clone();
+        tokio::spawn(async move { homeconnect::transcode::clean_cache_tmp(&s).await });
+    }
 
     let app = router(state.clone());
     let listener = tokio::net::TcpListener::bind(&state.config.bind).await?;

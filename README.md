@@ -37,6 +37,11 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
   resizable panes; 0.5×–8× playback speed.
 - **Split audio** — the qcamera mic track is extracted to a separate file and
   played in sync over the (silent) full-res/driver cameras, without re-muxing.
+- **Stitched movies** — once a drive is fully synced, each camera's one-minute
+  segments are concatenated and encoded in the background into a single seekable
+  MP4 with the audio muxed in. The Drive view plays that directly (native seek +
+  sound, no HLS or sync tricks) when it's ready, and it's offered as a clean
+  "watchable" download alongside the raw backup.
 - **Manage data** — per drive, download selected file types as a (stored) zip, or
   delete them off the server **and/or off the comma device** (over SSH) to reclaim
   the device's storage. Auto-prune (Settings) can delete each device copy right

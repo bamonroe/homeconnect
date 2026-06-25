@@ -618,6 +618,25 @@ pub async fn camera_m3u8(
         .into_response())
 }
 
+/// GET /v1/route/:fullname/movies — which cameras have a ready stitched movie for
+/// this drive (+ size/duration), so the UI can play it natively and offer it as a
+/// download. Owner/admin only.
+pub async fn route_movies(
+    State(state): State<AppState>,
+    Path(fullname): Path<String>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    let dongle = fullname
+        .split_once('|')
+        .map(|(d, _)| d.to_string())
+        .ok_or_else(|| AppError::BadRequest("bad route name".into()))?;
+    let device = load_device(&state, &dongle).await?;
+    if !user_owns(&state, &user, &device).await? {
+        return Err(AppError::Forbidden("not authorized for device".into()));
+    }
+    Ok(Json(json!({ "movies": crate::movie::status(&state, &fullname).await })))
+}
+
 /// GET /v1/me/unpaired_devices — devices that have registered (so we know their
 /// key) but aren't yet claimed by anyone. Home onboarding: any logged-in user
 /// can see and claim these.
