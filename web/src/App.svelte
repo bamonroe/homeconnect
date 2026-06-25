@@ -67,12 +67,14 @@
     <div class="brand">home<span>connect</span></div>
     {#if token}
       <div class="right">
-        {#if queue.files > 0}
-          <span class="syncing" title="Drives and files queued for syncing">
+        <span class="syncing" class:active={queue.files > 0} title="Drive sync status">
+          {#if queue.files > 0}
             <span class="spin">⟳</span>
             {queue.drives} drive{queue.drives === 1 ? '' : 's'} · {queue.files} file{queue.files === 1 ? '' : 's'}
-          </span>
-        {/if}
+          {:else}
+            <span class="ok-dot"></span> Synced
+          {/if}
+        </span>
         <button class="ghost" class:active={view === 'drives'} onclick={goDrives}>Drives</button>
         {#if user?.is_admin}
           <button class="ghost" class:active={view === 'device'} onclick={() => (view = 'device')}>Device</button>
@@ -113,8 +115,10 @@
   .brand span { color: var(--accent); }
   .right { display: flex; align-items: center; gap: 12px; }
   .right .active { border-color: var(--accent); color: var(--text); }
-  .syncing { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--accent);
+  .syncing { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
     border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
+  .syncing.active { color: var(--accent); border-color: var(--accent); }
+  .ok-dot { width: 7px; height: 7px; border-radius: 50%; background: #3fb950; }
   .spin { display: inline-block; animation: spin 1.4s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   main { flex: 1; min-height: 0; overflow: auto; }
