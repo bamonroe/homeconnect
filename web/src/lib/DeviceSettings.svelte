@@ -23,12 +23,11 @@
   }
 
   async function loadParams() {
-    msg = '';
     dp = await api.deviceParams(dev);
   }
 
   async function pickDevice(d) {
-    dev = d; error = ''; msg = '';
+    dev = d; error = '';
     try { await loadParams(); } catch (e) { error = e.message; }
   }
 
@@ -173,7 +172,6 @@
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 4px 16px; margin-bottom: 14px; }
   h3 { margin: 12px 0 4px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
   .small { font-size: 12px; }
-  .ok { color: #3fb950; }
   .item { border-bottom: 1px solid var(--border); }
   .item:last-child { border-bottom: none; }
   .drow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; font-size: 14px; }
