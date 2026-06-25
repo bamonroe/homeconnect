@@ -258,23 +258,29 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
     let v_in = concat_input(&v_paths);
     let a_in = concat_input(&a_paths);
     let have_audio = !a_paths.is_empty();
+    // The comma's mic starts a couple seconds after the camera on the FIRST segment
+    // of a drive (later segments are aligned). Concatenating audio separately drops
+    // that lead-in, shifting the whole track early — so delay the audio input by the
+    // first segment's measured audio-vs-video gap to realign it.
+    let lead = if have_audio { av_lead(&a_paths[0]).await } else { 0.0 };
 
     let ok = if cam == "qcamera" {
-        // Already H.264 + AAC in MPEG-TS — just remux to a faststart MP4.
+        // Already H.264 + AAC interleaved in MPEG-TS (A/V offset preserved) — just
+        // remux to a faststart MP4.
         run(qcamera_copy_args(&v_in, &tmp_s)).await
     } else {
         // Encode HEVC → H.264; prefer the selected GPU, fall back to CPU.
         let device = transcode::current_device(state).await;
         let mut ok = false;
         if let Some(dev) = &device {
-            ok = run(vaapi_args(dev, &v_in, &a_in, have_audio, &tmp_s)).await;
+            ok = run(vaapi_args(dev, &v_in, &a_in, have_audio, lead, &tmp_s)).await;
             if !ok {
                 tracing::warn!(%cam, "movie VAAPI encode failed; falling back to CPU");
                 let _ = tokio::fs::remove_file(&tmp).await;
             }
         }
         if !ok {
-            ok = run(cpu_args(&v_in, &a_in, have_audio, &tmp_s)).await;
+            ok = run(cpu_args(&v_in, &a_in, have_audio, lead, &tmp_s)).await;
         }
         ok
     };
@@ -298,6 +304,34 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
 /// True if the blob exists and is non-empty.
 async fn nonempty(path: &std::path::Path) -> bool {
     tokio::fs::metadata(path).await.map(|m| m.len() > 0).unwrap_or(false)
+}
+
+/// How far the audio track starts after the video in a source file (seconds). On
+/// the comma the mic spins up a couple seconds after the camera on the first
+/// segment of a drive; this is used to delay the muxed audio so it realigns.
+/// Clamped to [0, 10]; 0 on any probe failure.
+async fn av_lead(path: &str) -> f64 {
+    let out = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=codec_type,start_time", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .await;
+    let Ok(out) = out else { return 0.0 };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut v = None;
+    let mut a = None;
+    for line in text.lines() {
+        let mut it = line.split(',');
+        match (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+            (Some("video"), Some(t)) => v = Some(t),
+            (Some("audio"), Some(t)) => a = Some(t),
+            _ => {}
+        }
+    }
+    match (v, a) {
+        (Some(v), Some(a)) => (a - v).clamp(0.0, 10.0),
+        _ => 0.0,
+    }
 }
 
 /// Record a build outcome in the `movies` freshness table. `bytes == 0` marks a
@@ -334,8 +368,9 @@ fn qcamera_copy_args(v_in: &str, out: &str) -> Vec<String> {
 }
 
 /// GPU pipeline: decode the concatenated HEVC + encode H.264 on VAAPI, muxing the
-/// concatenated qcamera audio (software input) when present.
-fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, out: &str) -> Vec<String> {
+/// concatenated qcamera audio (software input) when present. `lead` delays the
+/// audio input to realign the first-segment mic-startup gap.
+fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, lead: f64, out: &str) -> Vec<String> {
     let mut a: Vec<String> = vec![
         "-nostdin", "-y",
         "-hwaccel", "vaapi", "-hwaccel_device", dev, "-hwaccel_output_format", "vaapi",
@@ -356,14 +391,21 @@ fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, out: &str) -> Vec<
         .map(|s| s.to_string()),
     );
     if audio {
-        a.extend(["-map", "1:a:0?", "-c:a", "aac", "-b:a", "96k", "-shortest"].iter().map(|s| s.to_string()));
+        a.extend(["-map", "1:a:0?", "-c:a", "aac", "-b:a", "96k"].iter().map(|s| s.to_string()));
+        if lead > 0.01 {
+            // Prepend the measured first-segment mic-startup gap as silence so the
+            // audio sits where it was recorded (deterministic, unlike -itsoffset).
+            a.extend(["-af".to_string(), format!("adelay={}:all=1", (lead * 1000.0) as i64)]);
+        }
+        a.push("-shortest".to_string());
     }
     a.extend(["-movflags", "+faststart", out].iter().map(|s| s.to_string()));
     a
 }
 
-/// CPU pipeline (libx264 veryfast crf23) with the same audio mux.
-fn cpu_args(v_in: &str, a_in: &str, audio: bool, out: &str) -> Vec<String> {
+/// CPU pipeline (libx264 veryfast crf23) with the same audio mux. `lead` delays the
+/// audio input to realign the first-segment mic-startup gap.
+fn cpu_args(v_in: &str, a_in: &str, audio: bool, lead: f64, out: &str) -> Vec<String> {
     let mut a: Vec<String> = vec![
         "-nostdin", "-y", "-fflags", "+genpts", "-r", FPS, "-f", "hevc", "-i", v_in,
     ]
@@ -382,7 +424,11 @@ fn cpu_args(v_in: &str, a_in: &str, audio: bool, out: &str) -> Vec<String> {
         .map(|s| s.to_string()),
     );
     if audio {
-        a.extend(["-map", "1:a:0?", "-c:a", "aac", "-b:a", "96k", "-shortest"].iter().map(|s| s.to_string()));
+        a.extend(["-map", "1:a:0?", "-c:a", "aac", "-b:a", "96k"].iter().map(|s| s.to_string()));
+        if lead > 0.01 {
+            a.extend(["-af".to_string(), format!("adelay={}:all=1", (lead * 1000.0) as i64)]);
+        }
+        a.push("-shortest".to_string());
     }
     a.extend(["-movflags", "+faststart", out].iter().map(|s| s.to_string()));
     a

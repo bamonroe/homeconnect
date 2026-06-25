@@ -147,6 +147,15 @@ macros).
   Real-world full-res road footage is ~12 MB/min at this quality (busy scenes);
   the driver cam (static interior) compresses far better. Don't trust a single
   "easy" segment as representative — measure on a real drive.
+- **Movie audio sync**: the comma's mic starts ~2-3s after the camera on the
+  **first** segment of a drive (later segments are aligned to ~ms). Concatenating
+  the qcamera audio separately drops that lead-in, shifting the whole muxed track
+  early by that gap (constant, not growing). `movie::build` probes the first
+  segment's audio-vs-video start gap (`av_lead`) and prepends it as silence via
+  `-af adelay=<ms>` so the track realigns. `-itsoffset` was tried first but
+  interacts nonlinearly with the qcamera input's own A/V normalization (the
+  qcamera.ts carries video too) — `adelay` is deterministic. The qcamera "Road"
+  movie is a stream copy (A/V interleaved, already aligned) so it needs no fix.
 - **Movies vs HLS**: a drive plays as dozens of 1-min clips via HLS, with audio
   (qcamera-only) layered over the silent full-res cams by a JS sync hack. A
   `movie.rs` artifact stitches+encodes the whole drive once into one MP4 **with
