@@ -98,6 +98,9 @@ export const api = {
   setSync: (patch) => req('POST', '/v1/admin/sync', patch),
   // sync queue counter (drives + files queued/in-flight)
   syncQueue: () => req('GET', '/v1/sync/queue'),
+  // per-drive sync settings (override of the global default)
+  routeSync: (fullname) => req('GET', `/v1/route/${encodeURIComponent(fullname)}/sync`),
+  setRouteSync: (fullname, patch) => req('POST', `/v1/route/${encodeURIComponent(fullname)}/sync`, patch),
   // device sync (SSH pull). opts: { full: bool, route: '<ts>', types: ['fcamera',…] }
   sync: (dongle, { full = false, route, types } = {}) => {
     const p = new URLSearchParams();

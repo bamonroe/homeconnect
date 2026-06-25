@@ -220,7 +220,11 @@ and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
   default is also runtime (`devsync::get_sync_types`/`set_sync_types`, key
   `sync_types`, seeded from `HC_SYNC_FULLRES`; `qlog` is always pulled). Per drive,
   the Drive view has **Sync** (default types for that route) + **Pull full-res**
-  (`?full=true` → `devsync::all_types()`). The device's `continue.sh` still exports
+  (`?full=true` → `devsync::all_types()`). **Per-route override**: `routes.sync_types`
+  (NULL = inherit the global default) lets a drive sync a different set; `scan`
+  resolves types per route, so a drive trimmed in Manage data isn't re-pulled —
+  **deleting data sets the override** (effective minus deleted) so it stays gone.
+  Edit it in Manage data → "Auto-sync for this drive" (`GET/POST /v1/route/{fullname}/sync`). The device's `continue.sh` still exports
   `API_HOST` etc. for athena/registration — only the *uploader* is bypassed. An
   in-flight guard in `ConnectionManager` keeps the two triggers from overlapping.
 - Deferred: device settings (read/edit a safe param subset over the same SSH

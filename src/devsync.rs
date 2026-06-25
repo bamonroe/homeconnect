@@ -40,9 +40,10 @@ const SYNC_CONCURRENCY: usize = 4;
 /// What to scan/enqueue in one `scan` call.
 #[derive(Clone, Default)]
 pub struct SyncOpts {
-    /// Optional data types to pull (`qlog` is always pulled regardless), e.g.
-    /// `["qcamera", "fcamera"]`.
-    pub types: Vec<String>,
+    /// `None` → resolve types per route (the route's override, else the global
+    /// default). `Some(list)` → force these types for all matched files (an
+    /// explicit pull). `qlog` is always pulled regardless.
+    pub types: Option<Vec<String>>,
     /// Limit to a single route (the `{ts}` portion); `None` = all routes.
     pub route: Option<String>,
 }
@@ -124,12 +125,79 @@ pub async fn get_sync_types(state: &AppState) -> Vec<String> {
 
 /// Set the default sync types (unknown tokens are dropped; order normalised).
 pub async fn set_sync_types(state: &AppState, types: &[String]) -> AppResult<()> {
-    let clean: Vec<&str> = OPTIONAL_TYPES
+    put_setting(state, TYPES_KEY, &clean_types(types).join(",")).await
+}
+
+/// Normalise a requested type list to the known optional types (order preserved).
+fn clean_types(types: &[String]) -> Vec<String> {
+    OPTIONAL_TYPES
         .iter()
         .copied()
         .filter(|t| types.iter().any(|x| x == t))
-        .collect();
-    put_setting(state, TYPES_KEY, &clean.join(",")).await
+        .map(str::to_string)
+        .collect()
+}
+
+/// A route's per-drive override of the synced types: `None` = inherit the global
+/// default; `Some(list)` = an explicit choice (possibly empty = qlog only).
+pub async fn get_route_override(state: &AppState, fullname: &str) -> Option<Vec<String>> {
+    let row: Option<Option<String>> =
+        sqlx::query_scalar::<_, Option<String>>("SELECT sync_types FROM routes WHERE fullname = ?")
+            .bind(fullname)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+    match row {
+        // Row exists with a non-NULL value → explicit override.
+        Some(Some(s)) => Some(s.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect()),
+        // No row, or NULL → inherit the global default.
+        _ => None,
+    }
+}
+
+/// The effective synced types for a route: its override, else the global default.
+pub async fn effective_route_types(state: &AppState, fullname: &str) -> Vec<String> {
+    match get_route_override(state, fullname).await {
+        Some(t) => t,
+        None => get_sync_types(state).await,
+    }
+}
+
+/// Set (`Some`) or clear (`None` → inherit default) a route's type override.
+pub async fn set_route_override(
+    state: &AppState,
+    fullname: &str,
+    types: Option<&[String]>,
+) -> AppResult<()> {
+    let value: Option<String> = types.map(|t| clean_types(t).join(","));
+    sqlx::query("UPDATE routes SET sync_types = ? WHERE fullname = ?")
+        .bind(value)
+        .bind(fullname)
+        .execute(&state.pool)
+        .await?;
+    Ok(())
+}
+
+/// Load every route's override for a dongle, keyed by the route's `{ts}` — used by
+/// `scan` to resolve per-route types without a query per file.
+async fn load_route_overrides(
+    state: &AppState,
+    dongle: &str,
+) -> AppResult<HashMap<String, Option<Vec<String>>>> {
+    let rows: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT fullname, sync_types FROM routes WHERE device_dongle_id = ?")
+            .bind(dongle)
+            .fetch_all(&state.pool)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(fullname, st)| {
+            let ts = fullname.split_once('|').map(|(_, t)| t.to_string())?;
+            let ov = st.map(|s| s.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect());
+            Some((ts, ov))
+        })
+        .collect())
 }
 
 async fn put_setting(state: &AppState, key: &str, value: &str) -> AppResult<()> {
@@ -176,7 +244,7 @@ pub async fn trigger(state: &AppState, dongle: &str) {
             return;
         }
     };
-    let opts = SyncOpts { types: get_sync_types(state).await, route: None };
+    let opts = SyncOpts { types: None, route: None };
     match scan(state, &device, opts).await {
         Ok(n) if n > 0 => tracing::info!(dongle = %dongle, "devsync (on connect): queued {n} files"),
         Ok(_) => {}
@@ -229,7 +297,7 @@ async fn sync_all(state: &AppState) -> AppResult<()> {
         if !state.athena.try_begin_sync(&d.dongle_id).await {
             continue;
         }
-        let opts = SyncOpts { types: get_sync_types(state).await, route: None };
+        let opts = SyncOpts { types: None, route: None };
         match scan(state, &d, opts).await {
             Ok(n) if n > 0 => {
                 tracing::info!(dongle = %d.dongle_id, "devsync (backstop): queued {n} files")
@@ -260,6 +328,17 @@ pub async fn scan(state: &AppState, device: &Device, opts: SyncOpts) -> AppResul
     // What's already registered (so we only enqueue what still needs work).
     let reg = load_registration(state, &device.dongle_id).await?;
 
+    // Type resolution: a forced list (explicit pull), or per-route (the route's
+    // override, else the global default) so a drive the user trimmed in Manage
+    // data isn't re-pulled.
+    let forced = opts.types.as_ref();
+    let global = if forced.is_none() { get_sync_types(state).await } else { Vec::new() };
+    let overrides = if forced.is_none() {
+        load_route_overrides(state, &device.dongle_id).await?
+    } else {
+        HashMap::new()
+    };
+
     let mut items: Vec<QueueItem> = Vec::new();
     for line in listing.lines() {
         let Some((ts, seg, file)) = parse_remote_path(line.trim()) else {
@@ -270,7 +349,15 @@ pub async fn scan(state: &AppState, device: &Device, opts: SyncOpts) -> AppResul
                 continue;
             }
         }
-        if !wanted(&file, &opts.types) {
+        let types: &[String] = match forced {
+            Some(t) => t,
+            None => overrides
+                .get(&ts)
+                .and_then(|o| o.as_ref())
+                .map(Vec::as_slice)
+                .unwrap_or(global.as_slice()),
+        };
+        if !wanted(&file, types) {
             continue;
         }
         let canonical = format!("{}|{}--{}", device.dongle_id, ts, seg);

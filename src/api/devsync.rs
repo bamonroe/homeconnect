@@ -37,16 +37,16 @@ pub async fn sync_now(
         return Err(AppError::Forbidden("not your device".into()));
     }
 
-    // Precedence: explicit `types` > `full` (all) > the configured default set.
+    // Precedence: explicit `types` > `full` (all) > per-route resolution (None).
     let fullres = matches!(q.full.as_deref(), Some("1" | "true" | "yes"));
-    let types = match q.types.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let types: Option<Vec<String>> = match q.types.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(list) => {
             let req: Vec<&str> = list.split(',').map(str::trim).collect();
             // Keep only known types (qlog is always pulled, so it needn't be listed).
-            devsync::all_types().into_iter().filter(|t| req.contains(&t.as_str())).collect()
+            Some(devsync::all_types().into_iter().filter(|t| req.contains(&t.as_str())).collect())
         }
-        None if fullres => devsync::all_types(),
-        None => devsync::get_sync_types(&state).await,
+        None if fullres => Some(devsync::all_types()),
+        None => None, // resolve per route (override else global default)
     };
     let opts = SyncOpts { types, route: q.route.clone() };
 
@@ -69,4 +69,67 @@ pub async fn queue_stats(
 ) -> AppResult<Json<Value>> {
     let (drives, files) = state.sync_queue.stats().await;
     Ok(Json(json!({ "drives": drives, "files": files })))
+}
+
+/// Authorize a per-route action: the caller owns the route's device (or is admin).
+async fn authorize_route(state: &AppState, user: &crate::models::User, fullname: &str) -> AppResult<()> {
+    let dongle = fullname
+        .split_once('|')
+        .map(|(d, _)| d)
+        .ok_or_else(|| AppError::BadRequest("bad route name".into()))?;
+    let device = crate::access::load_device(state, dongle)
+        .await?
+        .ok_or_else(|| AppError::NotFound("unknown device".into()))?;
+    if user.is_admin == 0 && device.owner_id != Some(user.id) {
+        return Err(AppError::Forbidden("not your device".into()));
+    }
+    Ok(())
+}
+
+/// GET /v1/route/:fullname/sync — this drive's effective synced types, whether
+/// it's a per-drive override or the inherited default, and the choices.
+pub async fn get_route_sync(
+    State(state): State<AppState>,
+    Path(fullname): Path<String>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    authorize_route(&state, &user, &fullname).await?;
+    let over = devsync::get_route_override(&state, &fullname).await;
+    let default = devsync::get_sync_types(&state).await;
+    Ok(Json(json!({
+        "types": over.clone().unwrap_or_else(|| default.clone()),
+        "overridden": over.is_some(),
+        "default": default,
+        "all_types": devsync::all_types(),
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct RouteSyncReq {
+    /// Set this drive's override to these types.
+    pub types: Option<Vec<String>>,
+    /// Clear the override so the drive inherits the global default.
+    pub reset: Option<bool>,
+}
+
+/// POST /v1/route/:fullname/sync — set or clear this drive's type override.
+pub async fn set_route_sync(
+    State(state): State<AppState>,
+    Path(fullname): Path<String>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<RouteSyncReq>,
+) -> AppResult<Json<Value>> {
+    authorize_route(&state, &user, &fullname).await?;
+    if req.reset.unwrap_or(false) {
+        devsync::set_route_override(&state, &fullname, None).await?;
+    } else if let Some(types) = &req.types {
+        devsync::set_route_override(&state, &fullname, Some(types)).await?;
+    }
+    let over = devsync::get_route_override(&state, &fullname).await;
+    let default = devsync::get_sync_types(&state).await;
+    Ok(Json(json!({
+        "ok": true,
+        "types": over.clone().unwrap_or_else(|| default.clone()),
+        "overridden": over.is_some(),
+    })))
 }

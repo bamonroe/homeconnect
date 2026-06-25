@@ -199,6 +199,17 @@ pub async fn delete(
     }
 
     crate::parse::recompute_route(&state, &dongle, &ts).await?;
+
+    // Don't let sync re-pull what was just deleted: pin this drive's sync types to
+    // the current effective set minus the deleted types (an explicit per-drive
+    // override). The user can re-enable them in Manage data.
+    let kept: Vec<String> = crate::devsync::effective_route_types(&state, &fullname)
+        .await
+        .into_iter()
+        .filter(|t| !req.types.contains(t))
+        .collect();
+    let _ = crate::devsync::set_route_override(&state, &fullname, Some(&kept)).await;
+
     tracing::info!(%fullname, removed, freed, "manage: deleted files");
     Ok(Json(json!({ "removed": removed, "freed_bytes": freed })))
 }

@@ -95,3 +95,33 @@ async fn sync_enabled_toggle_defaults_on_and_persists() {
         vec!["fcamera".to_string(), "rlog".to_string()]
     );
 }
+
+#[tokio::test]
+async fn per_route_sync_override() {
+    let state = test_state().await;
+    let (dongle, ts) = ("dongle0", "00000001--abc");
+    let fullname = format!("{dongle}|{ts}");
+    sqlx::query("INSERT INTO devices (dongle_id, public_key, created_at) VALUES (?, 'x', 0)")
+        .bind(dongle).execute(&state.pool).await.unwrap();
+    sqlx::query("INSERT INTO routes (fullname, device_dongle_id, created_at) VALUES (?, ?, 0)")
+        .bind(&fullname).bind(dongle).execute(&state.pool).await.unwrap();
+
+    use homeconnect::devsync::{get_route_override, set_route_override, effective_route_types};
+
+    // No override → inherits the global default (qcamera).
+    assert!(get_route_override(&state, &fullname).await.is_none());
+    assert_eq!(effective_route_types(&state, &fullname).await, vec!["qcamera".to_string()]);
+
+    // Set an override (unknown tokens dropped); effective follows it.
+    set_route_override(&state, &fullname, Some(&["dcamera".into(), "bogus".into()])).await.unwrap();
+    assert_eq!(get_route_override(&state, &fullname).await, Some(vec!["dcamera".to_string()]));
+    assert_eq!(effective_route_types(&state, &fullname).await, vec!["dcamera".to_string()]);
+
+    // Empty override = "sync nothing but qlog" — distinct from inherit.
+    set_route_override(&state, &fullname, Some(&[])).await.unwrap();
+    assert_eq!(get_route_override(&state, &fullname).await, Some(vec![]));
+
+    // Reset → inherit the default again.
+    set_route_override(&state, &fullname, None).await.unwrap();
+    assert!(get_route_override(&state, &fullname).await.is_none());
+}

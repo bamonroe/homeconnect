@@ -81,6 +81,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices/{dongle_id}/claim", post(api::v1::claim_device))
         .route("/v1/devices/{dongle_id}/sync", post(api::devsync::sync_now))
         .route("/v1/sync/queue", get(api::devsync::queue_stats))
+        .route("/v1/route/{fullname}/sync", get(api::devsync::get_route_sync).post(api::devsync::set_route_sync))
         // admin: retention policy
         .route("/v1/admin/retention", get(api::settings::get_retention).post(api::settings::set_retention))
         .route("/v1/admin/retention/run", post(api::settings::run_retention))
