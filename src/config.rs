@@ -38,6 +38,10 @@ pub struct Config {
     /// its space. Off by default (the device rotates its own storage); a runtime
     /// toggle seeds from this. Only ever deletes files we already hold.
     pub device_autoprune: bool,
+    /// Background movie encoding (stitched per-drive MP4s): master switch + sweep
+    /// interval (seconds). Both have runtime toggles in Settings that seed from these.
+    pub movie_enabled: bool,
+    pub movie_interval_secs: u64,
 }
 
 impl Config {
@@ -61,6 +65,8 @@ impl Config {
             sync_interval_secs: env_or("HC_SYNC_INTERVAL_SECS", "60").parse().unwrap_or(60),
             sync_fullres: env_or("HC_SYNC_FULLRES", "false").parse().unwrap_or(false),
             device_autoprune: env_or("HC_DEVICE_AUTOPRUNE", "false").parse().unwrap_or(false),
+            movie_enabled: env_or("HC_MOVIE_ENABLED", "true").parse().unwrap_or(true),
+            movie_interval_secs: env_or("HC_MOVIE_INTERVAL_SECS", "120").parse().unwrap_or(120),
         }
     }
 

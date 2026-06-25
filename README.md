@@ -133,6 +133,8 @@ All via env (`.env` for secrets):
 | `HC_SYNC_INTERVAL_SECS` | `60` | default for the runtime interval (Settings); `0` = connect-trigger only |
 | `HC_SYNC_FULLRES` | `false` | seeds the default synced data types (on → all cameras + rlog; off → Road only). Editable at Settings → Automatic drive sync |
 | `HC_DEVICE_AUTOPRUNE` | `false` | seeds the runtime "delete device copy after a safe pull" toggle (Settings → Automatic drive sync → Reclaim device storage). Only deletes files already stored here |
+| `HC_MOVIE_ENABLED` | `true` | seeds the runtime movie-encoding on/off toggle (Settings → Movie encoding) |
+| `HC_MOVIE_INTERVAL_SECS` | `120` | seeds the runtime interval the encoder sweeps for newly-complete drives (Settings → Movie encoding) |
 
 Retention and the transcode device are overridable at runtime from the admin
 **Settings** page (the env values are just defaults).

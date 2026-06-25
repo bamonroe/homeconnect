@@ -94,6 +94,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/retention/run", post(api::settings::run_retention))
         .route("/v1/admin/transcode", get(api::settings::get_transcode).post(api::settings::set_transcode))
         .route("/v1/admin/sync", get(api::settings::get_sync).post(api::settings::set_sync))
+        .route("/v1/admin/encoding", get(api::settings::get_encoding).post(api::settings::set_encoding))
         .route("/v1/admin/cam-calib", get(api::settings::get_cam_calib).post(api::settings::set_cam_calib))
         .route("/v1/devices/{dongle_id}/routes_segments", get(api::v1::routes_segments))
         .route("/v1/route/{fullname}/download", get(api::manage::download))

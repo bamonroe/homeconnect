@@ -121,6 +121,47 @@ pub async fn set_sync(
     })))
 }
 
+/// GET /v1/admin/encoding — background movie-encoder on/off + sweep interval.
+pub async fn get_encoding(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    Ok(Json(json!({
+        "enabled": crate::movie::is_enabled(&state).await,
+        "interval_secs": crate::movie::get_interval(&state).await,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct EncodingSettings {
+    pub enabled: Option<bool>,
+    pub interval_secs: Option<u64>,
+}
+
+/// POST /v1/admin/encoding — update the encoder toggle and/or sweep interval
+/// (runtime; the builder re-reads both each cycle). Either field may be omitted.
+pub async fn set_encoding(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<EncodingSettings>,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    if let Some(on) = req.enabled {
+        crate::movie::set_enabled(&state, on).await?;
+        tracing::info!(user = %user.username, "movie encoding {}", if on { "enabled" } else { "disabled" });
+    }
+    if let Some(secs) = req.interval_secs {
+        crate::movie::set_interval(&state, secs).await?;
+        tracing::info!(user = %user.username, "movie sweep interval set to {secs}s");
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "enabled": crate::movie::is_enabled(&state).await,
+        "interval_secs": crate::movie::get_interval(&state).await,
+    })))
+}
+
 /// GET /v1/admin/cam-calib — saved road-camera calibration for the model overlay
 /// (effective qcamera intrinsics + small rpy offsets). Defaults if unset.
 pub async fn get_cam_calib(

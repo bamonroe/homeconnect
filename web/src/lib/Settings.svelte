@@ -7,6 +7,7 @@
   let busy = $state(false);
   let tc = $state(null); // { current, devices: [{value,label,encodes}] }
   let sync = $state(null); // { enabled, interval_secs, types:[], all_types:[] }
+  let encode = $state(null); // { enabled, interval_secs }
 
   const TYPE_LABELS = {
     qcamera: 'Road (qcamera)',
@@ -19,9 +20,11 @@
   async function load() {
     error = '';
     try {
-      // Fetch concurrently — one round trip instead of three sequential ones.
-      const [c, t, s] = await Promise.all([api.retention(), api.transcode(), api.syncSettings()]);
-      cfg = c; tc = t; sync = s;
+      // Fetch concurrently — one round trip instead of several sequential ones.
+      const [c, t, s, e] = await Promise.all([
+        api.retention(), api.transcode(), api.syncSettings(), api.encodingSettings(),
+      ]);
+      cfg = c; tc = t; sync = s; encode = e;
     } catch (e) {
       error = e.message;
     }
@@ -84,6 +87,34 @@
       msg = r.interval_secs === 0
         ? 'Periodic check off — sync now only runs when the device connects.'
         : `Periodic check set to every ${r.interval_secs}s.`;
+    } catch (err) {
+      error = err.message;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function toggleEncoding(e) {
+    const on = e.currentTarget.checked;
+    busy = true; error = ''; msg = '';
+    try {
+      await api.setEncoding({ enabled: on });
+      encode.enabled = on;
+      msg = on ? 'Movie encoding turned on.' : 'Movie encoding turned off.';
+    } catch (err) {
+      error = err.message;
+      e.currentTarget.checked = !on; // revert on failure
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function saveEncodeInterval() {
+    busy = true; error = ''; msg = '';
+    try {
+      const r = await api.setEncoding({ interval_secs: Math.max(0, Number(encode.interval_secs) || 0) });
+      encode.interval_secs = r.interval_secs;
+      msg = `Encoder checks for new movies every ${r.interval_secs}s.`;
     } catch (err) {
       error = err.message;
     } finally {
@@ -202,6 +233,27 @@
           <input type="checkbox" checked={sync.autoprune} disabled={busy} onchange={toggleAutoprune} />
           <span>{sync.autoprune ? 'Auto-delete device copies after sync' : 'Keep device copies (device rotates its own storage)'}</span>
         </label>
+      </div>
+    {/if}
+
+    {#if encode}
+      <div class="card">
+        <h3>Movie encoding</h3>
+        <p class="muted small">
+          Stitch each fully-synced drive's segments into one watchable MP4 (with audio) in the
+          background. Turn off to pause all encoding; the builder checks for new drives on the
+          interval below. Runs independently of drive sync.
+        </p>
+        <label class="toggle">
+          <input type="checkbox" checked={encode.enabled} disabled={busy} onchange={toggleEncoding} />
+          <span>{encode.enabled ? 'On' : 'Off'}</span>
+        </label>
+        <label>Check for new drives to encode every (seconds)
+          <input type="number" min="30" step="10" bind:value={encode.interval_secs} disabled={busy} />
+        </label>
+        <div class="actions">
+          <button disabled={busy} onclick={saveEncodeInterval}>Save interval</button>
+        </div>
       </div>
     {/if}
 

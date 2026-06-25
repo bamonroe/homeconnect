@@ -73,6 +73,58 @@ fn cam_label(cam: &str) -> &'static str {
     }
 }
 
+/// Is background movie encoding enabled? Runtime toggle in the settings table,
+/// falling back to `HC_MOVIE_ENABLED` (default on) when unset.
+pub async fn is_enabled(state: &AppState) -> bool {
+    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(ENABLED_KEY)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+    match v {
+        Some(s) => s == "1" || s.eq_ignore_ascii_case("true"),
+        None => state.config.movie_enabled,
+    }
+}
+
+/// Set the runtime on/off toggle.
+pub async fn set_enabled(state: &AppState, on: bool) -> AppResult<()> {
+    put_setting(state, ENABLED_KEY, if on { "1" } else { "0" }).await
+}
+
+/// The sweep interval in seconds. Runtime setting, falling back to
+/// `HC_MOVIE_INTERVAL_SECS` (default 120) when unset.
+pub async fn get_interval(state: &AppState) -> u64 {
+    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(INTERVAL_KEY)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+    match v {
+        Some(s) => s.parse().unwrap_or(state.config.movie_interval_secs),
+        None => state.config.movie_interval_secs,
+    }
+}
+
+/// Set the sweep interval (seconds).
+pub async fn set_interval(state: &AppState, secs: u64) -> AppResult<()> {
+    put_setting(state, INTERVAL_KEY, &secs.to_string()).await
+}
+
+async fn put_setting(state: &AppState, key: &str, value: &str) -> AppResult<()> {
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(&state.pool)
+    .await?;
+    Ok(())
+}
+
 /// Cameras we build movies for. qcamera already carries audio + is H.264, so its
 /// movie is a stream copy; the HEVC cameras are encoded and get qcamera's audio.
 pub const MOVIE_CAMS: [&str; 4] = ["qcamera", "fcamera", "dcamera", "ecamera"];
@@ -82,8 +134,12 @@ const FPS: &str = "20";
 /// Building a whole-drive movie can take minutes (and a backlog sweep much longer
 /// per file); allow well beyond the per-segment transcode timeout.
 const BUILD_TIMEOUT: Duration = Duration::from_secs(3600);
-/// How often the background sweep looks for drives that need a movie.
-const SWEEP_SECS: u64 = 120;
+/// settings-table key for the runtime on/off toggle.
+const ENABLED_KEY: &str = "movie_enabled";
+/// settings-table key for the runtime sweep interval (seconds).
+const INTERVAL_KEY: &str = "movie_interval";
+/// Don't let the sweep run hotter than this, whatever the configured interval.
+const MIN_INTERVAL_SECS: u64 = 30;
 
 /// Route-level blob key for a camera's movie.
 pub fn movie_key(dongle: &str, ts: &str, cam: &str) -> String {
@@ -427,6 +483,10 @@ pub async fn sweep(state: &AppState) {
     // updating the progress counter so the header badge reflects the queue.
     state.movie_queue.set_pending(todo.len()).await;
     for (fullname, dongle, ts, cam) in todo {
+        // Honor a toggle flipped off mid-sweep (a long backlog can take a while).
+        if !is_enabled(state).await {
+            break;
+        }
         let short = ts.split("--").next().unwrap_or(&ts);
         state.movie_queue.begin(format!("{} · {}", cam_label(cam), short)).await;
         if let Err(e) = build(state, &dongle, &ts, cam).await {
@@ -449,16 +509,24 @@ pub async fn delete(state: &AppState, dongle: &str, ts: &str, cam: &str) {
         .await;
 }
 
-/// Spawn the background movie-builder sweep.
+/// Spawn the background movie-builder sweep. The on/off toggle and interval are
+/// re-read every cycle, so both can be changed from Settings without a restart
+/// (`HC_MOVIE_ENABLED`/`HC_MOVIE_INTERVAL_SECS` only seed the defaults).
 pub fn spawn(state: AppState) {
-    tracing::info!("movie: background builder (full-res CRF, eager per drive)");
+    tracing::info!("movie: background builder (runtime toggle + interval)");
     tokio::spawn(async move {
         // Clear prior failed/empty markers so a code change gets one fresh attempt
         // per restart (genuinely-empty drives just re-mark and stop retrying).
         let _ = sqlx::query("DELETE FROM movies WHERE bytes = 0").execute(&state.pool).await;
         loop {
+            if !is_enabled(&state).await {
+                // Encoding off; poll for re-enable without sweeping.
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+            }
             sweep(&state).await;
-            tokio::time::sleep(Duration::from_secs(SWEEP_SECS)).await;
+            let secs = get_interval(&state).await.max(MIN_INTERVAL_SECS);
+            tokio::time::sleep(Duration::from_secs(secs)).await;
         }
     });
 }

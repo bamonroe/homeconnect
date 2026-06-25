@@ -108,6 +108,9 @@ export const api = {
   // admin: automatic-sync on/off toggle + loop interval
   syncSettings: () => req('GET', '/v1/admin/sync'),
   setSync: (patch) => req('POST', '/v1/admin/sync', patch),
+  // admin: movie-encoder on/off toggle + sweep interval
+  encodingSettings: () => req('GET', '/v1/admin/encoding'),
+  setEncoding: (patch) => req('POST', '/v1/admin/encoding', patch),
   // sync queue counter (drives + files queued/in-flight)
   syncQueue: () => req('GET', '/v1/sync/queue'),
   // movie-encoder queue counter (movies left to build + current label)
