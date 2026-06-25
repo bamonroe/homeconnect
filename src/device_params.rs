@@ -14,6 +14,7 @@
 //! here as `Enum`s of the exact valid values (e.g. MaxTimeOffroad, the screen-off
 //! timer). Raw sliders without a value_map are `Int`s.
 
+use crate::db::now_millis;
 use crate::device_ssh;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -315,6 +316,133 @@ pub async fn write(state: &AppState, addr: &str, key: &str, value: &str) -> AppR
     device_ssh::run(state, addr, &cmd).await?;
     tracing::info!(key, value, "device param set");
     Ok(())
+}
+
+// ── Local cache (desired/last-known values) ──────────────────────────────────
+//
+// The Device page reads from this cache (instant, works offline). Edits write the
+// cache and mark the row `pending`; pending rows are flushed to the device over
+// SSH whenever it's online (on connect, or right after an edit if connected). The
+// device's actual values are read back into the cache on connect (`refresh`),
+// without clobbering pending edits.
+
+/// All cached `(key, value, pending)` for a dongle.
+pub async fn cache_all(state: &AppState, dongle: &str) -> Vec<(String, String, bool)> {
+    sqlx::query_as::<_, (String, String, i64)>(
+        "SELECT key, value, pending FROM device_params WHERE dongle_id = ?",
+    )
+    .bind(dongle)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(k, v, p)| (k, v, p != 0))
+    .collect()
+}
+
+async fn cache_count(state: &AppState, dongle: &str) -> i64 {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM device_params WHERE dongle_id = ?")
+        .bind(dongle)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0)
+}
+
+/// Set a cached value, marking it `pending` (a desired edit to flush).
+pub async fn cache_set(state: &AppState, dongle: &str, key: &str, value: &str) -> AppResult<()> {
+    sqlx::query(
+        "INSERT INTO device_params (dongle_id, key, value, pending, updated_at) \
+         VALUES (?, ?, ?, 1, ?) \
+         ON CONFLICT(dongle_id, key) DO UPDATE SET value = excluded.value, pending = 1, \
+            updated_at = excluded.updated_at",
+    )
+    .bind(dongle)
+    .bind(key)
+    .bind(value)
+    .bind(now_millis())
+    .execute(&state.pool)
+    .await?;
+    Ok(())
+}
+
+/// Write pending edits to the device, clearing `pending` on success. Returns how
+/// many were written. A failed write keeps its pending flag for the next attempt.
+pub async fn flush(state: &AppState, dongle: &str, addr: &str) -> AppResult<usize> {
+    let pend: Vec<(String, String)> =
+        sqlx::query_as("SELECT key, value FROM device_params WHERE dongle_id = ? AND pending = 1")
+            .bind(dongle)
+            .fetch_all(&state.pool)
+            .await?;
+    let mut n = 0;
+    for (k, v) in pend {
+        if !is_writable(&k, &v) {
+            // Stale/invalid — drop the pending flag so it doesn't get stuck.
+            let _ = clear_pending(state, dongle, &k).await;
+            continue;
+        }
+        match write(state, addr, &k, &v).await {
+            Ok(()) => {
+                clear_pending(state, dongle, &k).await?;
+                n += 1;
+            }
+            Err(e) => tracing::warn!(dongle, key = %k, "device param flush: {e}"),
+        }
+    }
+    Ok(n)
+}
+
+async fn clear_pending(state: &AppState, dongle: &str, key: &str) -> AppResult<()> {
+    sqlx::query("UPDATE device_params SET pending = 0 WHERE dongle_id = ? AND key = ?")
+        .bind(dongle)
+        .bind(key)
+        .execute(&state.pool)
+        .await?;
+    Ok(())
+}
+
+/// Read the device's actual values into the cache, leaving pending edits intact.
+pub async fn refresh(state: &AppState, dongle: &str, addr: &str) -> AppResult<()> {
+    let actual = read_all(state, addr).await?;
+    for (k, v) in actual {
+        sqlx::query(
+            "INSERT INTO device_params (dongle_id, key, value, pending, updated_at) \
+             VALUES (?, ?, ?, 0, ?) \
+             ON CONFLICT(dongle_id, key) DO UPDATE SET value = excluded.value, \
+                updated_at = excluded.updated_at WHERE device_params.pending = 0",
+        )
+        .bind(dongle)
+        .bind(&k)
+        .bind(&v)
+        .bind(now_millis())
+        .execute(&state.pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Flush pending edits, then refresh actuals — the cache↔device reconcile.
+pub async fn reconcile(state: &AppState, dongle: &str, addr: &str) {
+    if addr.is_empty() {
+        return;
+    }
+    if let Ok(n) = flush(state, dongle, addr).await {
+        if n > 0 {
+            tracing::info!(dongle, "device params: flushed {n} pending");
+        }
+    }
+    let _ = refresh(state, dongle, addr).await;
+}
+
+/// Reconcile on device connect (called from the athena handler).
+pub async fn on_connect(state: &AppState, dongle: &str) {
+    if let Ok(Some(d)) = crate::access::load_device(state, dongle).await {
+        reconcile(state, dongle, &d.last_addr).await;
+    }
+}
+
+/// True if the cache for this dongle is empty (never populated).
+pub async fn cache_empty(state: &AppState, dongle: &str) -> bool {
+    cache_count(state, dongle).await == 0
 }
 
 #[cfg(test)]

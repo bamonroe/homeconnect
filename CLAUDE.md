@@ -84,7 +84,7 @@ macros).
 | `api/onboard.rs` | serves the host-templated `onboard.sh` (repoint + device-scoped SSH key) |
 | `api/devsync.rs` | `POST /v1/devices/{d}/sync` — manual SSH-pull trigger (`?full=&route=`) |
 | `device_ssh.rs` | homeconnect's device-scoped ed25519 keypair; `run` (command) + `pull_file` (scp) over key-only SSH to `comma@<last_addr>` |
-| `device_params.rs` | curated allowlist of openpilot params; read-all + validated atomic write over SSH (`is_writable` guard) |
+| `device_params.rs` | curated allowlist of openpilot params; read/validated-write over SSH (`is_writable`); local write-through cache (`device_params` table): edits are instant + offline, flushed on connect |
 | `api/device_params.rs` | `GET/POST /v1/devices/{d}/params` — read/set the allowlisted device settings (owner/admin) |
 | `devsync.rs` | SSH-pull: `trigger` (on device connect) + optional periodic `spawn`; list `/data/media/0/realdata`, diff vs DB registration, pull/parse missing (qlog+qcamera default; full-res on demand) → `ingest::{ingest,register}_segment_file` |
 | `web/` | Svelte 5 + Vite SPA: Login, Drives (Sync now), Drive (HUD overlay, resizable panes, camera switch, speed, synced audio, Pull full-res), AddDevice, ManageData, Settings |
@@ -245,7 +245,12 @@ and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
   sunnypilot's grey-outs, e.g. the brightness *delay* needs brightness ≠ Auto, the
   blinker sub-options need `BlinkerPauseLateralControl`); the UI dims/disables it.
   Car-capability gates (e.g. `has_longitudinal_control`) aren't params, so those
-  aren't modeled.
+  aren't modeled. **Cache model:** the Device page reads/writes a local cache
+  (`device_params` table, migration 0005) so it's instant and editable offline.
+  An edit sets the cached value `pending=1`; `flush` writes pending values to the
+  device over SSH (right after the edit if online, else on next connect via
+  `on_connect`), and `refresh` reads actuals back without clobbering pending. The
+  athena connect handler calls `device_params::on_connect` (flush + refresh).
 - Deferred: delete-on-device.
 - **EV telemetry (SoC/power): not recoverable** from these logs — investigated and
   parked. openpilot logs the camera/ADAS CAN bus; the BMS/HV traffic is on the

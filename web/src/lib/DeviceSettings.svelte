@@ -5,11 +5,9 @@
 
   let devices = $state([]);
   let dev = $state(null); // selected dongle
-  let dp = $state(null); // { online, specs, values }
+  let dp = $state(null); // { online, specs, values, pending }
   let loading = $state(true);
-  let busy = $state(false);
   let error = $state('');
-  let msg = $state('');
 
   async function loadDevices() {
     loading = true; error = '';
@@ -34,20 +32,34 @@
     try { await loadParams(); } catch (e) { error = e.message; }
   }
 
+  let syncTimer;
+  // Edits update the cache instantly and queue a write; the device gets it now
+  // (if online) or on its next connect. So the UI flips immediately.
   async function setParam(key, value) {
-    busy = true; error = ''; msg = '';
+    const prev = dp.values[key];
+    error = '';
+    dp.values[key] = value;
+    if (!dp.pending.includes(key)) dp.pending = [...dp.pending, key];
+    dp = { ...dp };
     try {
-      await api.setDeviceParam(dev, key, value);
-      dp.values[key] = value;
-      dp = { ...dp };
-      msg = 'Saved to device.';
+      const r = await api.setDeviceParam(dev, key, value);
+      // When online, re-pull shortly after to clear the "pending" dots once the
+      // background flush to the device has landed.
+      if (r.online) {
+        clearTimeout(syncTimer);
+        syncTimer = setTimeout(async () => {
+          try { dp = await api.deviceParams(dev); } catch {}
+        }, 2000);
+      }
     } catch (e) {
       error = e.message;
-      try { dp = await api.deviceParams(dev); } catch {} // revert UI to device truth
-    } finally {
-      busy = false;
+      dp.values[key] = prev; // revert on rejection (e.g. invalid value)
+      dp.pending = dp.pending.filter((k) => k !== key);
+      dp = { ...dp };
     }
   }
+
+  let pendingCount = $derived(dp ? dp.pending.length : 0);
 
   let groups = $derived(dp ? [...new Set(dp.specs.map((s) => s.group))] : []);
 
@@ -88,17 +100,21 @@
   </div>
 
   {#if error}<p class="error">{error}</p>{/if}
-  {#if msg}<p class="ok">{msg}</p>{/if}
 
   {#if loading}
     <p class="muted">Loading…</p>
   {:else if !devices.length}
     <p class="muted">No devices yet. Add and claim a device first.</p>
   {:else if dp}
-    {#if !dp.online}
-      <p class="muted small">Device is offline. Connect it (wifi/tailnet) to read and change these settings.</p>
-    {:else}
-      <p class="muted small">Changes are written to the device over SSH; most apply on the next ignition.</p>
+    <p class="muted small">
+      Changes save instantly and apply to the device when it's online{dp.online ? '' : ' — it’s offline now'}.
+      Most settings take effect on the next ignition.
+    </p>
+    {#if pendingCount > 0}
+      <p class="pending-banner small">
+        {pendingCount} change{pendingCount === 1 ? '' : 's'} pending —
+        {dp.online ? 'applying to the device…' : 'will apply when it reconnects.'}
+      </p>
     {/if}
 
     {#each groups as g}
@@ -110,29 +126,29 @@
           <div class="item">
             {#if s.kind === 'info'}
               <div class="drow">
-                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}</span>
+                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}{#if dp.pending.includes(s.key)}<span class="pend" title="Pending — not yet sent to the device"></span>{/if}</span>
                 <span class="muted">{dp.values[s.key] || '—'}</span>
               </div>
             {:else if s.kind === 'bool'}
               <label class="drow" class:dim={!on}>
-                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}</span>
-                <input type="checkbox" checked={dp.values[s.key] === '1'} disabled={busy || !dp.online || !on}
+                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}{#if dp.pending.includes(s.key)}<span class="pend" title="Pending — not yet sent to the device"></span>{/if}</span>
+                <input type="checkbox" checked={dp.values[s.key] === '1'} disabled={!on}
                   onchange={(e) => setParam(s.key, e.currentTarget.checked ? '1' : '0')} />
               </label>
             {:else if s.kind === 'enum'}
               <label class="drow" class:dim={!on}>
-                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}</span>
-                <select value={dp.values[s.key] ?? ''} disabled={busy || !dp.online || !on}
+                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}{#if dp.pending.includes(s.key)}<span class="pend" title="Pending — not yet sent to the device"></span>{/if}</span>
+                <select value={dp.values[s.key] ?? ''} disabled={!on}
                   onchange={(e) => setParam(s.key, e.currentTarget.value)}>
                   {#each s.options as o}<option value={o.value}>{o.label}</option>{/each}
                 </select>
               </label>
             {:else if s.kind === 'int'}
               <label class="drow" class:dim={!on}>
-                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}</span>
+                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}{#if dp.pending.includes(s.key)}<span class="pend" title="Pending — not yet sent to the device"></span>{/if}</span>
                 <span class="num">
                   <input type="number" min={s.min} max={s.max} step={s.step || 1}
-                    value={dp.values[s.key] ?? ''} disabled={busy || !dp.online || !on}
+                    value={dp.values[s.key] ?? ''} disabled={!on}
                     onchange={(e) => setParam(s.key, e.currentTarget.value)} />
                   {#if s.unit}<span class="muted small">{s.unit}</span>{/if}
                 </span>
@@ -164,6 +180,8 @@
   .drow input, .drow select { width: auto; flex: none; }
   .lbl { display: inline-flex; align-items: center; gap: 8px; }
   .dim { opacity: 0.4; }
+  .pend { width: 7px; height: 7px; border-radius: 50%; background: #d29922; flex: none; }
+  .pending-banner { color: #d29922; margin-top: -4px; }
   .help { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--border); background: transparent;
     color: var(--muted); font-size: 11px; line-height: 1; cursor: pointer; flex: none; padding: 0; }
   .help:hover { color: var(--text); border-color: var(--accent); }

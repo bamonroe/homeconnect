@@ -102,6 +102,12 @@ async fn handle_socket(socket: WebSocket, dongle_id: String, state: AppState) {
         let dg = dongle_id.clone();
         tokio::spawn(async move { crate::devsync::trigger(&st, &dg).await });
     }
+    // Flush any pending device-setting edits + refresh the cache from the device.
+    {
+        let st = state.clone();
+        let dg = dongle_id.clone();
+        tokio::spawn(async move { crate::device_params::on_connect(&st, &dg).await });
+    }
 
     let (mut sender, mut receiver) = {
         use futures_util::StreamExt;

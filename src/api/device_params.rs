@@ -47,7 +47,10 @@ fn specs_json() -> Vec<Value> {
         .collect()
 }
 
-/// GET /v1/devices/:dongle/params — the editable settings + current values.
+/// GET /v1/devices/:dongle/params — editable settings + cached values. Served
+/// from homeconnect's cache (instant), so it works even when the device is
+/// offline. The cache is refreshed from the device on connect; first-ever load
+/// populates it once if the device is reachable.
 pub async fn get_params(
     State(state): State<AppState>,
     Path(dongle): Path<String>,
@@ -56,24 +59,25 @@ pub async fn get_params(
     let device = authorize_device(&state, &user, &dongle).await?;
     let online = device.online == 1 && !device.last_addr.is_empty();
 
+    // One-time bootstrap: if we've never cached this device, read it now.
+    if online && device_params::cache_empty(&state, &dongle).await {
+        let _ = device_params::refresh(&state, &dongle, &device.last_addr).await;
+    }
+
     let mut values = Map::new();
-    if online {
-        match device_params::read_all(&state, &device.last_addr).await {
-            Ok(pairs) => {
-                for (k, v) in pairs {
-                    values.insert(k, Value::String(v));
-                }
-            }
-            // Reachability can lapse between the online flag and the SSH call;
-            // surface specs anyway so the UI can render a disabled form.
-            Err(e) => tracing::warn!(%dongle, "device params read: {e}"),
+    let mut pending: Vec<Value> = Vec::new();
+    for (k, v, is_pending) in device_params::cache_all(&state, &dongle).await {
+        if is_pending {
+            pending.push(Value::String(k.clone()));
         }
+        values.insert(k, Value::String(v));
     }
 
     Ok(Json(json!({
-        "online": online && !values.is_empty(),
+        "online": online,
         "specs": specs_json(),
         "values": values,
+        "pending": pending,
     })))
 }
 
@@ -83,7 +87,9 @@ pub struct SetParam {
     pub value: String,
 }
 
-/// POST /v1/devices/:dongle/params — set one allowlisted param.
+/// POST /v1/devices/:dongle/params — set one allowlisted param. Writes the cache
+/// (instant) and marks it pending; the value is flushed to the device now if it's
+/// online, otherwise on its next connect.
 pub async fn set_param(
     State(state): State<AppState>,
     Path(dongle): Path<String>,
@@ -91,10 +97,19 @@ pub async fn set_param(
     Json(req): Json<SetParam>,
 ) -> AppResult<Json<Value>> {
     let device = authorize_device(&state, &user, &dongle).await?;
-    if device.online != 1 || device.last_addr.is_empty() {
-        return Err(AppError::BadRequest("device is offline".into()));
+    if !device_params::is_writable(&req.key, &req.value) {
+        return Err(AppError::BadRequest("not an editable setting, or invalid value".into()));
     }
-    device_params::write(&state, &device.last_addr, &req.key, &req.value).await?;
-    tracing::info!(user = %user.username, %dongle, key = %req.key, "device setting changed");
-    Ok(Json(json!({ "ok": true, "key": req.key, "value": req.value })))
+    device_params::cache_set(&state, &dongle, &req.key, &req.value).await?;
+    tracing::info!(user = %user.username, %dongle, key = %req.key, "device setting queued");
+
+    // Flush promptly (in the background) if the device is reachable.
+    let online = device.online == 1 && !device.last_addr.is_empty();
+    if online {
+        let (st, dg, addr) = (state.clone(), dongle.clone(), device.last_addr.clone());
+        tokio::spawn(async move {
+            let _ = device_params::flush(&st, &dg, &addr).await;
+        });
+    }
+    Ok(Json(json!({ "ok": true, "key": req.key, "value": req.value, "online": online })))
 }
