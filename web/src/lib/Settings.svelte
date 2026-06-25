@@ -122,6 +122,34 @@
     }
   }
 
+  const SCALE_LABELS = { native: 'Full (1344×760)', '854': '854×480', '640': '640×360' };
+  async function saveEncodeQuality() {
+    busy = true; error = ''; msg = '';
+    try {
+      const r = await api.setEncoding({
+        scale: encode.scale, crf: Math.max(16, Math.min(35, Number(encode.crf) || 23)), preset: encode.preset,
+      });
+      encode = { ...encode, ...r };
+      msg = 'Encode settings saved. Use “Re-encode all” to apply them to existing movies.';
+    } catch (err) {
+      error = err.message;
+    } finally {
+      busy = false;
+    }
+  }
+  async function reencodeAll() {
+    if (!confirm('Re-encode every movie with the current settings? Existing movies are rebuilt in the background (deleted ones stay deleted).')) return;
+    busy = true; error = ''; msg = '';
+    try {
+      const r = await api.reencodeMovies();
+      msg = `Re-encoding ${r.cleared} movie${r.cleared === 1 ? '' : 's'} — watch the Encoding badge.`;
+    } catch (err) {
+      error = err.message;
+    } finally {
+      busy = false;
+    }
+  }
+
   async function saveTranscode() {
     busy = true; error = ''; msg = '';
     try {
@@ -253,6 +281,33 @@
         </label>
         <div class="actions">
           <button disabled={busy} onclick={saveEncodeInterval}>Save interval</button>
+        </div>
+
+        <h4>Encode quality</h4>
+        <p class="muted small">
+          How the full-res cameras are encoded (the Road movie is a fast stream copy, unaffected).
+          Lower quality number = better &amp; bigger; full-res road footage is ~12 MB/min at 23.
+        </p>
+        <label>Resolution
+          <select bind:value={encode.scale} disabled={busy}>
+            {#each encode.scale_options ?? ['native'] as s}
+              <option value={s}>{SCALE_LABELS[s] ?? s}</option>
+            {/each}
+          </select>
+        </label>
+        <label>Quality (CRF, 16–35; lower = better)
+          <input type="number" min="16" max="35" step="1" bind:value={encode.crf} disabled={busy} />
+        </label>
+        <label>CPU preset
+          <select bind:value={encode.preset} disabled={busy}>
+            {#each encode.preset_options ?? ['veryfast'] as p}
+              <option value={p}>{p}</option>
+            {/each}
+          </select>
+        </label>
+        <div class="actions">
+          <button disabled={busy} onclick={saveEncodeQuality}>Save quality</button>
+          <button class="ghost" disabled={busy} onclick={reencodeAll}>Re-encode all movies</button>
         </div>
       </div>
     {/if}

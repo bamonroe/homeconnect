@@ -121,26 +121,34 @@ pub async fn set_sync(
     })))
 }
 
-/// GET /v1/admin/encoding — background movie-encoder on/off + sweep interval.
+/// GET /v1/admin/encoding — background movie-encoder on/off + sweep interval +
+/// how movies are encoded (resolution/quality/preset).
 pub async fn get_encoding(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> AppResult<Json<Value>> {
     require_admin(&user)?;
-    Ok(Json(json!({
-        "enabled": crate::movie::is_enabled(&state).await,
-        "interval_secs": crate::movie::get_interval(&state).await,
-    })))
+    let mut out = crate::movie::encode_settings_json(&state).await;
+    if let Some(o) = out.as_object_mut() {
+        o.insert("enabled".into(), json!(crate::movie::is_enabled(&state).await));
+        o.insert("interval_secs".into(), json!(crate::movie::get_interval(&state).await));
+    }
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]
 pub struct EncodingSettings {
     pub enabled: Option<bool>,
     pub interval_secs: Option<u64>,
+    pub scale: Option<String>,
+    pub crf: Option<u32>,
+    pub preset: Option<String>,
 }
 
-/// POST /v1/admin/encoding — update the encoder toggle and/or sweep interval
-/// (runtime; the builder re-reads both each cycle). Either field may be omitted.
+/// POST /v1/admin/encoding — update the encoder toggle, sweep interval, and/or the
+/// encode settings (runtime; the builder reads them each build). Any field may be
+/// omitted. Changing encode settings affects future builds — use the re-encode
+/// endpoint to rebuild existing movies.
 pub async fn set_encoding(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -155,11 +163,23 @@ pub async fn set_encoding(
         crate::movie::set_interval(&state, secs).await?;
         tracing::info!(user = %user.username, "movie sweep interval set to {secs}s");
     }
-    Ok(Json(json!({
-        "ok": true,
-        "enabled": crate::movie::is_enabled(&state).await,
-        "interval_secs": crate::movie::get_interval(&state).await,
-    })))
+    if req.scale.is_some() || req.crf.is_some() || req.preset.is_some() {
+        crate::movie::set_encode_settings(&state, req.scale.as_deref(), req.crf, req.preset.as_deref()).await?;
+        tracing::info!(user = %user.username, "movie encode settings updated");
+    }
+    get_encoding(State(state), AuthUser(user)).await
+}
+
+/// POST /v1/admin/encoding/reencode — rebuild all (non-disabled) movies with the
+/// current settings.
+pub async fn reencode_movies(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    let cleared = crate::movie::reencode_all(&state).await;
+    tracing::info!(user = %user.username, cleared, "movie re-encode all");
+    Ok(Json(json!({ "ok": true, "cleared": cleared })))
 }
 
 /// GET /v1/admin/cam-calib — saved road-camera calibration for the model overlay

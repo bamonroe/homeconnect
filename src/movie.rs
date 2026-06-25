@@ -147,6 +147,90 @@ async fn put_setting(state: &AppState, key: &str, value: &str) -> AppResult<()> 
     Ok(())
 }
 
+async fn get_setting(state: &AppState, key: &str) -> Option<String> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// settings keys for how movies are encoded.
+const SCALE_KEY: &str = "movie_scale"; // "native" | "854" | "640"
+const CRF_KEY: &str = "movie_crf"; // x264 CRF (also maps to VAAPI qp)
+const PRESET_KEY: &str = "movie_preset"; // libx264 preset
+
+/// How movies are encoded (read from settings; sensible defaults). `scale` is the
+/// target (width,height) or None for native 1344×760; `crf` is the x264 quality
+/// (lower = better/bigger), reused as `qp = crf+5` on VAAPI; `preset` is libx264's.
+#[derive(Clone)]
+pub struct EncodeOpts {
+    pub scale: Option<(u32, u32)>,
+    pub crf: u32,
+    pub preset: String,
+}
+
+/// The downscale options offered, keyed by the stored token (aspect-correct, even
+/// dimensions derived from the 1344×760 HEVC cameras).
+fn scale_for(token: &str) -> Option<(u32, u32)> {
+    match token {
+        "854" => Some((854, 482)),
+        "640" => Some((640, 362)),
+        _ => None, // "native" or unset
+    }
+}
+
+pub async fn encode_opts(state: &AppState) -> EncodeOpts {
+    let scale = scale_for(get_setting(state, SCALE_KEY).await.as_deref().unwrap_or("native"));
+    let crf = get_setting(state, CRF_KEY)
+        .await
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(23)
+        .clamp(16, 35);
+    let preset = get_setting(state, PRESET_KEY).await.unwrap_or_else(|| "veryfast".into());
+    EncodeOpts { scale, crf, preset }
+}
+
+/// Current encode settings as JSON (for the Settings UI), plus the choices.
+pub async fn encode_settings_json(state: &AppState) -> Value {
+    let scale_tok = get_setting(state, SCALE_KEY).await.unwrap_or_else(|| "native".into());
+    let o = encode_opts(state).await;
+    json!({
+        "scale": scale_tok,
+        "crf": o.crf,
+        "preset": o.preset,
+        "scale_options": ["native", "854", "640"],
+        "preset_options": ["ultrafast", "veryfast", "faster", "fast", "medium", "slow"],
+    })
+}
+
+/// Persist any provided encode settings (validated).
+pub async fn set_encode_settings(
+    state: &AppState,
+    scale: Option<&str>,
+    crf: Option<u32>,
+    preset: Option<&str>,
+) -> AppResult<()> {
+    if let Some(s) = scale {
+        if !["native", "854", "640"].contains(&s) {
+            return Err(AppError::BadRequest("bad scale".into()));
+        }
+        put_setting(state, SCALE_KEY, s).await?;
+    }
+    if let Some(c) = crf {
+        put_setting(state, CRF_KEY, &c.clamp(16, 35).to_string()).await?;
+    }
+    if let Some(p) = preset {
+        let allowed = ["ultrafast", "veryfast", "faster", "fast", "medium", "slow"];
+        if !allowed.contains(&p) {
+            return Err(AppError::BadRequest("bad preset".into()));
+        }
+        put_setting(state, PRESET_KEY, p).await?;
+    }
+    Ok(())
+}
+
 /// Cameras we build movies for. qcamera already carries audio + is H.264, so its
 /// movie is a stream copy; the HEVC cameras are encoded and get qcamera's audio.
 pub const MOVIE_CAMS: [&str; 4] = ["qcamera", "fcamera", "dcamera", "ecamera"];
@@ -269,18 +353,20 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
         // remux to a faststart MP4.
         run(qcamera_copy_args(&v_in, &tmp_s)).await
     } else {
-        // Encode HEVC → H.264; prefer the selected GPU, fall back to CPU.
+        // Encode HEVC → H.264 per the configured encode settings; prefer the
+        // selected GPU, fall back to CPU.
+        let opts = encode_opts(state).await;
         let device = transcode::current_device(state).await;
         let mut ok = false;
         if let Some(dev) = &device {
-            ok = run(vaapi_args(dev, &v_in, &a_in, have_audio, lead, &tmp_s)).await;
+            ok = run(vaapi_args(dev, &v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
             if !ok {
                 tracing::warn!(%cam, "movie VAAPI encode failed; falling back to CPU");
                 let _ = tokio::fs::remove_file(&tmp).await;
             }
         }
         if !ok {
-            ok = run(cpu_args(&v_in, &a_in, have_audio, lead, &tmp_s)).await;
+            ok = run(cpu_args(&v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
         }
         ok
     };
@@ -370,7 +456,7 @@ fn qcamera_copy_args(v_in: &str, out: &str) -> Vec<String> {
 /// GPU pipeline: decode the concatenated HEVC + encode H.264 on VAAPI, muxing the
 /// concatenated qcamera audio (software input) when present. `lead` delays the
 /// audio input to realign the first-segment mic-startup gap.
-fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, lead: f64, out: &str) -> Vec<String> {
+fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
     let mut a: Vec<String> = vec![
         "-nostdin", "-y",
         "-hwaccel", "vaapi", "-hwaccel_device", dev, "-hwaccel_output_format", "vaapi",
@@ -382,13 +468,15 @@ fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, lead: f64, out: &s
     if audio {
         a.extend(["-i", a_in].iter().map(|s| s.to_string()));
     }
+    // scale_vaapi handles the optional downscale on the GPU; qp tracks the CRF.
+    let vf = match opts.scale {
+        Some((w, h)) => format!("scale_vaapi=w={w}:h={h}:format=nv12"),
+        None => "scale_vaapi=format=nv12".to_string(),
+    };
     a.extend(
-        [
-            "-vf", "scale_vaapi=format=nv12", "-map", "0:v:0",
-            "-c:v", "h264_vaapi", "-qp", "28",
-        ]
-        .iter()
-        .map(|s| s.to_string()),
+        ["-vf", &vf, "-map", "0:v:0", "-c:v", "h264_vaapi", "-qp", &(opts.crf + 5).to_string()]
+            .iter()
+            .map(|s| s.to_string()),
     );
     if audio {
         a.extend(["-map", "1:a:0?", "-c:a", "aac", "-b:a", "96k"].iter().map(|s| s.to_string()));
@@ -405,7 +493,7 @@ fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, lead: f64, out: &s
 
 /// CPU pipeline (libx264 veryfast crf23) with the same audio mux. `lead` delays the
 /// audio input to realign the first-segment mic-startup gap.
-fn cpu_args(v_in: &str, a_in: &str, audio: bool, lead: f64, out: &str) -> Vec<String> {
+fn cpu_args(v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
     let mut a: Vec<String> = vec![
         "-nostdin", "-y", "-fflags", "+genpts", "-r", FPS, "-f", "hevc", "-i", v_in,
     ]
@@ -415,13 +503,14 @@ fn cpu_args(v_in: &str, a_in: &str, audio: bool, lead: f64, out: &str) -> Vec<St
     if audio {
         a.extend(["-i", a_in].iter().map(|s| s.to_string()));
     }
+    a.extend(["-map", "0:v:0"].iter().map(|s| s.to_string()));
+    if let Some((w, h)) = opts.scale {
+        a.extend(["-vf".to_string(), format!("scale={w}:{h}")]);
+    }
     a.extend(
-        [
-            "-map", "0:v:0",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-        ]
-        .iter()
-        .map(|s| s.to_string()),
+        ["-c:v", "libx264", "-preset", &opts.preset, "-crf", &opts.crf.to_string(), "-pix_fmt", "yuv420p"]
+            .iter()
+            .map(|s| s.to_string()),
     );
     if audio {
         a.extend(["-map", "1:a:0?", "-c:a", "aac", "-b:a", "96k"].iter().map(|s| s.to_string()));
@@ -601,6 +690,27 @@ pub async fn disable(state: &AppState, dongle: &str, ts: &str, cam: &str) {
     .bind(now)
     .execute(&state.pool)
     .await;
+}
+
+/// Re-encode all (non-disabled) movies with the current settings: delete their
+/// blobs + freshness rows and kick a sweep. Used after changing encode settings.
+/// Returns how many were cleared. User-disabled movies are left alone.
+pub async fn reencode_all(state: &AppState) -> u64 {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT fullname, cam FROM movies WHERE disabled = 0")
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
+    let n = rows.len() as u64;
+    for (fullname, cam) in &rows {
+        if let Some((dongle, ts)) = fullname.split_once('|') {
+            let _ = state.blobs.delete(&movie_key(dongle, ts, cam)).await;
+        }
+    }
+    let _ = sqlx::query("DELETE FROM movies WHERE disabled = 0").execute(&state.pool).await;
+    state.movie_queue.request_sweep();
+    tracing::info!(cleared = n, "movie: re-encode all requested");
+    n
 }
 
 /// Spawn the background movie-builder sweep. The on/off toggle and interval are
