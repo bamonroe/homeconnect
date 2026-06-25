@@ -515,15 +515,21 @@
   .statstrip .s b { color: var(--text); }
   .grid { flex: 1; min-height: 0; display: flex; }
   .map { flex: 1; min-width: 0; height: 100%; }
-  .col-resizer { width: 6px; flex: none; cursor: col-resize; background: var(--border); }
-  .col-resizer:hover { background: var(--accent); }
+  .col-resizer { width: 10px; flex: none; cursor: col-resize; background: var(--panel);
+    display: flex; align-items: center; justify-content: center; touch-action: none; }
+  .col-resizer::after { content: ''; width: 4px; height: 42px; border-radius: 3px;
+    background: var(--border); transition: background 0.1s; }
+  .col-resizer:hover::after, .col-resizer:active::after { background: var(--accent); }
   .side { flex: none; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
   .cams { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); flex: none; }
   .cams .active { border-color: var(--accent); color: var(--accent); }
   .video-wrap { position: relative; flex: none; background: #000; }
   video { width: 100%; height: 100%; background: #000; object-fit: contain; display: block; }
-  .row-resizer { height: 6px; flex: none; cursor: row-resize; background: var(--border); }
-  .row-resizer:hover { background: var(--accent); }
+  .row-resizer { height: 10px; flex: none; cursor: row-resize; background: var(--panel);
+    display: flex; align-items: center; justify-content: center; touch-action: none; }
+  .row-resizer::after { content: ''; height: 4px; width: 42px; border-radius: 3px;
+    background: var(--border); transition: background 0.1s; }
+  .row-resizer:hover::after, .row-resizer:active::after { background: var(--accent); }
   .hud {
     position: absolute; top: 8px; left: 8px; right: 8px; display: flex;
     align-items: flex-start; justify-content: space-between; pointer-events: none;
