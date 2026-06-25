@@ -48,6 +48,7 @@ struct Telem {
     brake: bool,  // brake pressed
     gas: bool,    // gas pressed
     steer: f32,    // steering angle (deg)
+    steer_override: bool, // driver is overriding the wheel (CarState.steeringPressed)
     engaged: bool, // openpilot actively engaged (SelfdriveState.enabled)
     cruise: bool,  // car cruise control on (cruiseState.enabled)
     soc: f32,      // state of charge / fuel level, percent (fuelGauge * 100)
@@ -418,6 +419,7 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
                     brake: cs.get_brake_pressed(),
                     gas: cs.get_gas_pressed(),
                     steer: cs.get_steering_angle_deg(),
+                    steer_override: cs.get_steering_pressed(),
                     engaged: acc.cur_engaged,
                     cruise,
                     soc: cs.get_fuel_gauge() * 100.0,

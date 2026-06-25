@@ -24,13 +24,27 @@
   let telemetry = $state([]); // {t, speed, gear, lb, rb, brake, gas, steer, engaged}
   // Engage/disengage events derived from the continuous telemetry — only on a
   // real transition, so no duplicate or segment-boundary artifacts.
+  // Why a disengagement happened, from the driver's inputs at the transition.
+  function disengageReason(i) {
+    // Look at the last engaged sample and the first disengaged one.
+    for (const s of [telemetry[i], telemetry[i - 1]]) {
+      if (!s) continue;
+      if (s.gas) return 'gas';
+      if (s.brake) return 'brake';
+      if (s.steer_override) return 'steering';
+    }
+    return 'manual';
+  }
+  const reasonLabel = (r) =>
+    ({ gas: 'gas pedal', brake: 'brake', steering: 'steering', manual: 'manual / off' })[r] ?? r;
   let engageEvents = $derived.by(() => {
     const out = [];
     let prev = false;
-    for (const s of telemetry) {
-      if (!!s.engaged !== prev) {
-        prev = !!s.engaged;
-        out.push({ t: s.t, engaged: prev });
+    for (let i = 0; i < telemetry.length; i++) {
+      const e = !!telemetry[i].engaged;
+      if (e !== prev) {
+        out.push({ t: telemetry[i].t, engaged: e, reason: e ? null : disengageReason(i) });
+        prev = e;
       }
     }
     return out;
@@ -388,6 +402,7 @@
           {#each engageEvents as e}
             <button class="ev" onclick={() => seek(e.t * 1000)}>
               <span class="badge" class:on={e.engaged}>{e.engaged ? 'engaged' : 'disengaged'}</span>
+              {#if e.reason}<span class="reason r-{e.reason}">{reasonLabel(e.reason)}</span>{/if}
               <span class="muted small">{fmtT(e.t)}</span>
             </button>
           {/each}
@@ -449,6 +464,9 @@
   }
   .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #6e7681; color: #fff; }
   .badge.on { background: #3fb950; }
+  .reason { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .reason.r-gas, .reason.r-brake { color: #f0883e; border-color: #bb6a2a; }
+  .reason.r-steering { color: #d29922; border-color: #9e7615; }
   .small { font-size: 12px; }
   @media (max-width: 800px) {
     .grid { flex-direction: column; }
