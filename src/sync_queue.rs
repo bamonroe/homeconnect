@@ -25,8 +25,8 @@ pub struct QueueItem {
 struct Inner {
     pending: VecDeque<QueueItem>,
     pending_keys: HashSet<String>,
-    /// key -> route ts, for the items currently being processed.
-    active: HashMap<String, String>,
+    /// key -> (route ts, file), for the items currently being processed.
+    active: HashMap<String, (String, String)>,
 }
 
 /// Cloneable handle to the shared queue.
@@ -66,7 +66,7 @@ impl SyncQueue {
                 let mut s = self.inner.lock().await;
                 if let Some(it) = s.pending.pop_front() {
                     s.pending_keys.remove(&it.key);
-                    s.active.insert(it.key.clone(), it.ts.clone());
+                    s.active.insert(it.key.clone(), (it.ts.clone(), it.file.clone()));
                     return it;
                 }
             }
@@ -86,10 +86,24 @@ impl SyncQueue {
         for it in &s.pending {
             drives.insert(it.ts.as_str());
         }
-        for ts in s.active.values() {
+        for (ts, _) in s.active.values() {
             drives.insert(ts.as_str());
         }
         (drives.len(), s.pending.len() + s.active.len())
+    }
+
+    /// The queue contents for the detail page: `(ts, file, in_flight)`, in-flight
+    /// items first.
+    pub async fn detail(&self) -> Vec<(String, String, bool)> {
+        let s = self.inner.lock().await;
+        let mut out: Vec<(String, String, bool)> = Vec::new();
+        for (ts, file) in s.active.values() {
+            out.push((ts.clone(), file.clone(), true));
+        }
+        for it in &s.pending {
+            out.push((it.ts.clone(), it.file.clone(), false));
+        }
+        out
     }
 }
 

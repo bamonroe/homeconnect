@@ -68,7 +68,14 @@ pub async fn queue_stats(
     AuthUser(_user): AuthUser,
 ) -> AppResult<Json<Value>> {
     let (drives, files) = state.sync_queue.stats().await;
-    Ok(Json(json!({ "drives": drives, "files": files })))
+    let items: Vec<Value> = state
+        .sync_queue
+        .detail()
+        .await
+        .into_iter()
+        .map(|(ts, file, in_flight)| json!({ "ts": ts, "file": file, "in_flight": in_flight }))
+        .collect();
+    Ok(Json(json!({ "drives": drives, "files": files, "items": items })))
 }
 
 /// Authorize a per-route action: the caller owns the route's device (or is admin).

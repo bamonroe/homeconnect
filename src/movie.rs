@@ -43,8 +43,8 @@ impl Default for MovieQueue {
 
 #[derive(Default)]
 struct MovieQ {
-    pending: usize,
     current: Option<String>,
+    queued: Vec<String>, // labels of movies still waiting (not the one encoding)
 }
 
 impl MovieQueue {
@@ -61,27 +61,39 @@ impl MovieQueue {
         }
     }
 
-    async fn set_pending(&self, n: usize) {
-        self.inner.lock().await.pending = n;
+    async fn set_queue(&self, labels: Vec<String>) {
+        self.inner.lock().await.queued = labels;
     }
     async fn begin(&self, label: String) {
-        self.inner.lock().await.current = Some(label);
+        let mut s = self.inner.lock().await;
+        if let Some(pos) = s.queued.iter().position(|l| l == &label) {
+            s.queued.remove(pos);
+        }
+        s.current = Some(label);
     }
     async fn finish(&self) {
-        let mut s = self.inner.lock().await;
-        s.current = None;
-        s.pending = s.pending.saturating_sub(1);
+        self.inner.lock().await.current = None;
     }
     async fn clear(&self) {
         let mut s = self.inner.lock().await;
-        s.pending = 0;
         s.current = None;
+        s.queued.clear();
     }
-    /// (pending count, current label) for the API/badge.
+    /// (total remaining count, current label) for the badge.
     pub async fn stats(&self) -> (usize, Option<String>) {
         let s = self.inner.lock().await;
-        (s.pending, s.current.clone())
+        (s.queued.len() + usize::from(s.current.is_some()), s.current.clone())
     }
+    /// (current label, queued labels) for the detail page.
+    pub async fn detail(&self) -> (Option<String>, Vec<String>) {
+        let s = self.inner.lock().await;
+        (s.current.clone(), s.queued.clone())
+    }
+}
+
+/// Display label for a queued/encoding movie, e.g. "Road HD · 00000006".
+fn queue_label(cam: &str, ts: &str) -> String {
+    format!("{} · {}", cam_label(cam), ts.split("--").next().unwrap_or(ts))
 }
 
 /// Friendly camera name for the progress label.
@@ -668,15 +680,14 @@ pub async fn sweep(state: &AppState) {
         return;
     }
     // Second pass: build sequentially (the encode semaphore serializes anyway),
-    // updating the progress counter so the header badge reflects the queue.
-    state.movie_queue.set_pending(todo.len()).await;
+    // publishing the queue so the header badge + queues page reflect it.
+    state.movie_queue.set_queue(todo.iter().map(|(_, _, ts, cam)| queue_label(cam, ts)).collect()).await;
     for (fullname, dongle, ts, cam) in todo {
         // Honor a toggle flipped off mid-sweep (a long backlog can take a while).
         if !is_enabled(state).await {
             break;
         }
-        let short = ts.split("--").next().unwrap_or(&ts);
-        state.movie_queue.begin(format!("{} · {}", cam_label(cam), short)).await;
+        state.movie_queue.begin(queue_label(cam, &ts)).await;
         if let Err(e) = build(state, &dongle, &ts, cam).await {
             tracing::warn!(%fullname, %cam, "movie build: {e}");
         }

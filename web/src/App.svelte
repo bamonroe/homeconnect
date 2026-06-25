@@ -6,6 +6,7 @@
   import Settings from './lib/Settings.svelte';
   import DeviceSettings from './lib/DeviceSettings.svelte';
   import Stats from './lib/Stats.svelte';
+  import Queues from './lib/Queues.svelte';
 
   let token = $state(getToken());
   let user = $state(getUser());
@@ -70,19 +71,19 @@
     <div class="brand">home<span>connect</span></div>
     {#if token}
       <div class="right">
-        <span class="syncing" class:active={queue.files > 0} title="Drive sync status">
+        <button class="syncing" class:active={queue.files > 0} class:sel={view === 'queues'} title="Drive sync status — click for the queue" onclick={() => (view = 'queues')}>
           {#if queue.files > 0}
             <span class="spin">⟳</span>
             {queue.drives} drive{queue.drives === 1 ? '' : 's'} · {queue.files} file{queue.files === 1 ? '' : 's'}
           {:else}
             <span class="ok-dot"></span> Synced
           {/if}
-        </span>
+        </button>
         {#if enc.building > 0}
-          <span class="syncing active" title={enc.current ? `Encoding ${enc.current}` : 'Encoding movies'}>
+          <button class="syncing active" class:sel={view === 'queues'} title={enc.current ? `Encoding ${enc.current} — click for the queue` : 'Encoding movies'} onclick={() => (view = 'queues')}>
             <span class="spin">⟳</span>
             Encoding {enc.building} movie{enc.building === 1 ? '' : 's'}
-          </span>
+          </button>
         {/if}
         <button class="ghost" class:active={view === 'drives'} onclick={goDrives}>Drives</button>
         <button class="ghost" class:active={view === 'stats'} onclick={() => (view = 'stats')}>Stats</button>
@@ -107,6 +108,8 @@
       <DeviceSettings />
     {:else if view === 'stats'}
       <Stats />
+    {:else if view === 'queues'}
+      <Queues />
     {:else if selected}
       {#key selected.route.fullname}
         <Drive route={selected.route} onback={() => (selected = null)} />
@@ -128,8 +131,11 @@
   .right { display: flex; align-items: center; gap: 12px; }
   .right .active { border-color: var(--accent); color: var(--text); }
   .syncing { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
-    border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
+    border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
+    background: none; cursor: pointer; font-family: inherit; }
+  .syncing:hover { border-color: var(--accent); }
   .syncing.active { color: var(--accent); border-color: var(--accent); }
+  .syncing.sel { background: var(--panel-2); }
   .ok-dot { width: 7px; height: 7px; border-radius: 50%; background: #3fb950; }
   .spin { display: inline-block; animation: spin 1.4s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }

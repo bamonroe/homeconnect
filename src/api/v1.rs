@@ -626,7 +626,8 @@ pub async fn movie_queue(
     AuthUser(_user): AuthUser,
 ) -> AppResult<Json<Value>> {
     let (building, current) = state.movie_queue.stats().await;
-    Ok(Json(json!({ "building": building, "current": current })))
+    let (_, queued) = state.movie_queue.detail().await;
+    Ok(Json(json!({ "building": building, "current": current, "queued": queued })))
 }
 
 /// GET /v1/route/:fullname/movies — which cameras have a ready stitched movie for
