@@ -5,6 +5,7 @@
   import Hls from 'hls.js';
   import { api, getToken } from './api.js';
   import ManageData from './ManageData.svelte';
+  import DriveGraph from './DriveGraph.svelte';
 
   let { route, onback } = $props();
   let showManage = $state(false);
@@ -377,6 +378,7 @@
           {/each}
         </span>
       </div>
+      <DriveGraph {telemetry} {curT} onseek={(t) => seek(t * 1000)} />
       <div class="row-resizer" onpointerdown={startRowResize} title="Drag to resize"></div>
       <div class="events">
         <div class="ev-head">Engagements</div>
