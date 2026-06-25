@@ -26,6 +26,38 @@
   let movies = $state({});
   let movieMode = $state(false);
 
+  // Audio boost. The comma mic is quiet and the <video>/<audio> volume caps at
+  // 100%; a Web Audio gain node lets us amplify past that. Both the movie's video
+  // element and the HLS audio element feed one gain node → output.
+  let volume = $state(Number(localStorage.getItem('hc_volume')) || 1); // 1 = 100%
+  let audioCtx, gainNode, vidSrc, audSrc;
+  function ensureAudioGraph() {
+    if (audioCtx) { audioCtx.resume?.(); return; }
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      audioCtx = new AC();
+      gainNode = audioCtx.createGain();
+      gainNode.gain.value = volume;
+      gainNode.connect(audioCtx.destination);
+      // One source per element (createMediaElementSource is once-per-element);
+      // the muted/idle one contributes silence, so this works in both modes.
+      vidSrc = audioCtx.createMediaElementSource(videoEl);
+      vidSrc.connect(gainNode);
+      audSrc = audioCtx.createMediaElementSource(audioEl);
+      audSrc.connect(gainNode);
+      audioCtx.resume?.();
+    } catch (e) {
+      audioCtx = null; // unsupported → fall back to native (capped at 100%)
+    }
+  }
+  function setVolume(v) {
+    volume = v;
+    localStorage.setItem('hc_volume', String(v));
+    ensureAudioGraph();
+    if (gainNode) gainNode.gain.value = v;
+  }
+
   let coords = $state([]); // {t, lat, lng, speed}
   let telemetry = $state([]); // {t, speed, gear, lb, rb, brake, gas, steer, engaged}
   // Engage/disengage events derived from the continuous telemetry — only on a
@@ -384,7 +416,7 @@
   function wireAudioSync() {
     // No-op in movie mode — the movie has its own muxed audio track.
     const resync = () => { if (audioEl && !movieMode) audioEl.currentTime = videoEl.currentTime; };
-    videoEl.addEventListener('play', () => { if (movieMode) return; resync(); audioEl?.play().catch(() => {}); });
+    videoEl.addEventListener('play', () => { ensureAudioGraph(); if (movieMode) return; resync(); audioEl?.play().catch(() => {}); });
     videoEl.addEventListener('pause', () => { if (!movieMode) audioEl?.pause(); });
     videoEl.addEventListener('seeking', resync);
     videoEl.addEventListener('ratechange', () => { if (audioEl && !movieMode) audioEl.playbackRate = videoEl.playbackRate; });
@@ -584,6 +616,11 @@
                   <button class="ghost rate" class:active={rate === r} onclick={() => setRate(r)}>{r}×</button>
                 {/each}
               </span>
+              <label class="vol" title="Audio volume / boost (up to 400%)">
+                <span class="vicon">🔊</span>
+                <input type="range" min="0" max="4" step="0.1" value={volume} oninput={(e) => setVolume(+e.currentTarget.value)} />
+                <span class="muted small vval">{Math.round(volume * 100)}%</span>
+              </label>
             </div>
             {#if showOverlay && !OVERLAY_CAMS.includes(cam)}
               <div class="muted small pad">The overlay needs a road camera — switch to Road, Road HD, or Wide.</div>
@@ -706,6 +743,10 @@
   .arrow.lit { color: #3fb950; }
   .ctrl { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; }
   .moviebadge { font-size: 11px; color: #3fb950; border: 1px solid #2ea043; border-radius: 999px; padding: 1px 8px; }
+  .vol { display: inline-flex; align-items: center; gap: 6px; }
+  .vol input { width: 84px; }
+  .vol .vicon { font-size: 13px; }
+  .vol .vval { min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
   .rates { display: flex; gap: 4px; }
   .rate { padding: 3px 8px; font-size: 12px; }
   .rate.active { border-color: var(--accent); color: var(--accent); }
