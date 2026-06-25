@@ -4,11 +4,12 @@
   import Drives from './lib/Drives.svelte';
   import Drive from './lib/Drive.svelte';
   import Settings from './lib/Settings.svelte';
+  import DeviceSettings from './lib/DeviceSettings.svelte';
 
   let token = $state(getToken());
   let user = $state(getUser());
   let selected = $state(null); // { route }
-  let view = $state('drives'); // 'drives' | 'settings'
+  let view = $state('drives'); // 'drives' | 'settings' | 'device'
 
   // A `?pair=<token>` in the URL (e.g. scanned device QR) pairs once logged in.
   let pendingPair = new URLSearchParams(location.search).get('pair');
@@ -69,9 +70,10 @@
           </span>
         {/if}
         {#if user?.is_admin}
-          <button class="ghost" onclick={() => (view = view === 'settings' ? 'drives' : 'settings')}>
-            {view === 'settings' ? 'Drives' : 'Settings'}
-          </button>
+          <button class="ghost" class:active={view === 'device'}
+            onclick={() => (view = view === 'device' ? 'drives' : 'device')}>Device</button>
+          <button class="ghost" class:active={view === 'settings'}
+            onclick={() => (view = view === 'settings' ? 'drives' : 'settings')}>Settings</button>
         {/if}
         <span class="muted">{user?.username ?? ''}</span>
         <button class="ghost" onclick={logout}>Log out</button>
@@ -86,6 +88,8 @@
       <Login {onLogin} />
     {:else if view === 'settings'}
       <Settings onback={() => (view = 'drives')} />
+    {:else if view === 'device'}
+      <DeviceSettings onback={() => (view = 'drives')} />
     {:else if selected}
       {#key selected.route.fullname}
         <Drive route={selected.route} onback={() => (selected = null)} />
@@ -105,6 +109,7 @@
   .brand { font-weight: 700; font-size: 18px; }
   .brand span { color: var(--accent); }
   .right { display: flex; align-items: center; gap: 12px; }
+  .right .active { border-color: var(--accent); color: var(--text); }
   .syncing { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--accent);
     border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
   .spin { display: inline-block; animation: spin 1.4s linear infinite; }

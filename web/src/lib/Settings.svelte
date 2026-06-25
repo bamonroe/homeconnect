@@ -18,39 +18,14 @@
     rlog: 'Raw log (rlog)',
   };
 
-  let dev = $state(null); // selected dongle
-  let devName = $state('');
-  let dp = $state(null); // { online, specs, values }
-
   async function load() {
     error = '';
     try {
       cfg = await api.retention();
       tc = await api.transcode();
       sync = await api.syncSettings();
-      const devs = await api.devices();
-      if (devs.length) {
-        dev = devs[0].dongle_id;
-        devName = devs[0].alias || devs[0].dongle_id;
-        dp = await api.deviceParams(dev);
-      }
     } catch (e) {
       error = e.message;
-    }
-  }
-
-  async function setParam(key, value) {
-    busy = true; error = ''; msg = '';
-    try {
-      await api.setDeviceParam(dev, key, value);
-      dp.values[key] = value;
-      dp = { ...dp };
-      msg = 'Saved to device.';
-    } catch (e) {
-      error = e.message;
-      try { dp = await api.deviceParams(dev); } catch {} // revert UI to device truth
-    } finally {
-      busy = false;
     }
   }
 
@@ -208,36 +183,6 @@
       </div>
     {/if}
 
-    {#if dp}
-      <div class="card">
-        <h3>Device settings{devName ? ` — ${devName}` : ''}</h3>
-        {#if !dp.online}
-          <p class="muted small">Device is offline. Connect it (wifi/tailnet) to read and change these.</p>
-        {:else}
-          <p class="muted small">Changes are written to the device over SSH; most apply on the next ignition.</p>
-        {/if}
-        {#each dp.specs as s}
-          {#if s.kind === 'info'}
-            <div class="drow"><span>{s.label}</span><span class="muted">{dp.values[s.key] || '—'}</span></div>
-          {:else if s.kind === 'bool'}
-            <label class="drow">
-              <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
-              <input type="checkbox" checked={dp.values[s.key] === '1'} disabled={busy || !dp.online}
-                onchange={(e) => setParam(s.key, e.currentTarget.checked ? '1' : '0')} />
-            </label>
-          {:else if s.kind === 'enum'}
-            <label class="drow">
-              <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
-              <select value={dp.values[s.key] ?? ''} disabled={busy || !dp.online}
-                onchange={(e) => setParam(s.key, e.currentTarget.value)}>
-                {#each s.options as o}<option value={o.value}>{o.label}</option>{/each}
-              </select>
-            </label>
-          {/if}
-        {/each}
-      </div>
-    {/if}
-
     {#if tc}
       <div class="card">
         <h3>Transcoding device</h3>
@@ -281,9 +226,6 @@
   h3 { margin: 0 0 10px; font-size: 14px; }
   h4 { margin: 16px 0 6px; font-size: 13px; }
   .checks { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-  .drow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
-  .drow:last-child { border-bottom: none; }
-  .drow input, .drow select { width: auto; flex: none; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
   label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
   label.toggle { flex-direction: row; align-items: center; gap: 10px; margin-bottom: 0; font-size: 14px; color: var(--text); }
