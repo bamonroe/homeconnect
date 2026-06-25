@@ -235,6 +235,7 @@ struct ModelLead {
 struct ModelFrame {
     t: f64,
     path: ModelXY,
+    speed: Vec<f32>, // predicted speed (m/s) per path point (from modelV2.velocity)
     lanes: Vec<ModelXY>,
     edges: Vec<ModelXY>,
     lead: Option<ModelLead>,
@@ -255,6 +256,11 @@ fn flist(r: ::capnp::Result<::capnp::primitive_list::Reader<'_, f32>>, step: usi
 }
 fn xy(d: crate::cereal::log_capnp::x_y_z_t_data::Reader<'_>, step: usize) -> ModelXY {
     ModelXY { x: flist(d.get_x(), step), y: flist(d.get_y(), step), z: flist(d.get_z(), step) }
+}
+fn speed_norm(d: crate::cereal::log_capnp::x_y_z_t_data::Reader<'_>, step: usize) -> Vec<f32> {
+    let (xs, ys, zs) = (flist(d.get_x(), step), flist(d.get_y(), step), flist(d.get_z(), step));
+    let n = xs.len().min(ys.len()).min(zs.len());
+    (0..n).map(|i| (xs[i] * xs[i] + ys[i] * ys[i] + zs[i] * zs[i]).sqrt()).collect()
 }
 
 /// Extract a downsampled model series from an rlog (path, lane lines, road edges,
@@ -291,6 +297,7 @@ pub fn extract_model(file: &str, raw: &[u8]) -> ModelArtifact {
         }
         let t = mono.saturating_sub(b) as f64 / 1_000_000_000.0;
         let path = m.get_position().map(|p| xy(p, PT_STEP)).unwrap_or(ModelXY { x: vec![], y: vec![], z: vec![] });
+        let speed = m.get_velocity().map(|v| speed_norm(v, PT_STEP)).unwrap_or_default();
         let mut lanes = Vec::new();
         if let Ok(lls) = m.get_lane_lines() {
             let probs = m.get_lane_line_probs().ok();
@@ -327,7 +334,7 @@ pub fn extract_model(file: &str, raw: &[u8]) -> ModelArtifact {
                 v: first(l.get_v()).unwrap_or(0.0),
             })
         });
-        frames.push(ModelFrame { t, path, lanes, edges, lead });
+        frames.push(ModelFrame { t, path, speed, lanes, edges, lead });
     }
     ModelArtifact { rpy, frames }
 }

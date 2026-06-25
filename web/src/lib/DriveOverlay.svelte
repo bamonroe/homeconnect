@@ -8,6 +8,12 @@
   const QW = 526, QH = 330; // qcamera native pixels
   let canvas;
 
+  // speed → color (blue slow → green fast), tunable alpha.
+  function speedColor(mph, a = 1) {
+    const t = Math.max(0, Math.min(1, mph / 70));
+    return `hsla(${Math.round(210 - 90 * t)}, 80%, 55%, ${a})`;
+  }
+
   // device_from_calib rotation (Rz(yaw)·Ry(pitch)·Rx(roll)); rpy + saved offsets.
   function rot(r, p, y) {
     const cr = Math.cos(r), sr = Math.sin(r), cp = Math.cos(p), sp = Math.sin(p), cy = Math.cos(y), sy = Math.sin(y);
@@ -78,21 +84,21 @@
     const p = frame.path;
     if (p?.x?.length > 1) {
       const HALF = 0.9;
-      const left = [], right = [];
+      const L = [], Rr = [];
       for (let i = 0; i < p.x.length; i++) {
         const z = (p.z?.[i] ?? 0) + ph;
-        const l = proj(p.x[i], p.y[i] - HALF, z);
-        const r = proj(p.x[i], p.y[i] + HALF, z);
-        if (l) left.push(l);
-        if (r) right.push(r);
+        L.push(proj(p.x[i], p.y[i] - HALF, z));
+        Rr.push(proj(p.x[i], p.y[i] + HALF, z));
       }
-      if (left.length > 1 && right.length > 1) {
+      // Per-segment quads colored by predicted speed.
+      for (let i = 0; i < p.x.length - 1; i++) {
+        const a = L[i], b = Rr[i], c2 = Rr[i + 1], d2 = L[i + 1];
+        if (!a || !b || !c2 || !d2) continue;
+        const mph = (frame.speed?.[i] ?? 0) * 2.237;
         ctx.beginPath();
-        ctx.moveTo(left[0][0], left[0][1]);
-        for (const q of left) ctx.lineTo(q[0], q[1]);
-        for (let i = right.length - 1; i >= 0; i--) ctx.lineTo(right[i][0], right[i][1]);
+        ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c2[0], c2[1]); ctx.lineTo(d2[0], d2[1]);
         ctx.closePath();
-        ctx.fillStyle = 'rgba(64,156,255,0.35)';
+        ctx.fillStyle = speedColor(mph, 0.42);
         ctx.fill();
       }
     }
@@ -104,7 +110,7 @@
         ctx.strokeStyle = '#f0883e'; ctx.lineWidth = 3;
         ctx.strokeRect(lp[0] - sz / 2, lp[1] - sz / 2, sz, sz);
         ctx.fillStyle = '#f0b429'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText(`${Math.round(frame.lead.x)} m`, lp[0], lp[1] - sz / 2 - 4);
+        ctx.fillText(`${Math.round(frame.lead.x)} m · ${Math.round(frame.lead.v * 2.237)} mph`, lp[0], lp[1] - sz / 2 - 4);
       }
     }
   }
