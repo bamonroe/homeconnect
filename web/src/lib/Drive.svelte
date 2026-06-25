@@ -55,7 +55,7 @@
   let curT = $state(0);
   let tnow = $state(null); // current telemetry sample
   let rate = $state(1);    // playback speed
-  let cam = $state('qcamera');
+  let cam = $state(localStorage.getItem('hc_cam') || 'qcamera');
 
   // Resizable panes (persisted). rightW = width of the video/events column;
   // videoH = height of the video within that column.
@@ -139,7 +139,7 @@
   }
 
   // Top-down model view (modelV2 from the rlog) — lazy-loaded on first toggle.
-  let showModel = $state(false);
+  let showModel = $state(localStorage.getItem('hc_showModel') === '1');
   let modelFrames = $state([]);
   let modelRpy = $state([0, 0, 0]);
   let modelLoading = $state(false);
@@ -156,29 +156,43 @@
   }
   function toggleModel() {
     showModel = !showModel;
+    localStorage.setItem('hc_showModel', showModel ? '1' : '0');
     if (showModel) loadModel();
   }
 
-  // On-video model overlay + its calibration.
-  let showOverlay = $state(false);
+  // On-video model overlay + per-camera calibration.
+  const OVERLAY_CAMS = ['qcamera', 'fcamera', 'ecamera']; // road-facing
+  const CAM_DIMS = { qcamera: [526, 330], fcamera: [1344, 760], ecamera: [1344, 760] };
+  const CALIB_DEFAULTS = {
+    qcamera: { fisheye: false, fx: 722.4, fy: 722.4, cx: 263, cy: 165, pitch: 0, yaw: 0, roll: 0, h: 1.2 },
+    fcamera: { fisheye: false, fx: 1846, fy: 1846, cx: 672, cy: 380, pitch: 0, yaw: 0, roll: 0, h: 1.2 },
+    ecamera: { fisheye: true, fx: 395, fy: 395, cx: 672, cy: 380, pitch: 0, yaw: 0, roll: 0, h: 1.2 },
+  };
+  let showOverlay = $state(localStorage.getItem('hc_showOverlay') === '1');
   let calibrating = $state(false);
-  let calib = $state(null);
+  let calib = $state(null); // full per-camera object
   let calibMsg = $state('');
+  let camCalib = $derived(calib?.[cam]);
+  let camLabel = $derived(cameras.find((c) => c.id === cam)?.label ?? cam);
+  let nw = $derived(CAM_DIMS[cam]?.[0] ?? 526);
+  let nh = $derived(CAM_DIMS[cam]?.[1] ?? 330);
+  let overlayOk = $derived(showOverlay && OVERLAY_CAMS.includes(cam) && modelFrames.length > 0 && !!camCalib);
+  async function loadCalib() {
+    if (calib) return;
+    try { calib = await api.camCalib(); } catch { calib = structuredClone(CALIB_DEFAULTS); }
+  }
   async function toggleOverlay() {
     showOverlay = !showOverlay;
-    if (showOverlay) {
-      loadModel();
-      if (!calib) { try { calib = { ...CALIB_DEFAULTS, ...(await api.camCalib()) }; } catch { calib = { ...CALIB_DEFAULTS }; } }
-    }
+    localStorage.setItem('hc_showOverlay', showOverlay ? '1' : '0');
+    if (showOverlay) { loadModel(); await loadCalib(); }
   }
-  const CALIB_DEFAULTS = { fx: 722.4, fy: 722.4, cx: 263, cy: 165, pitch: 0, yaw: 0, roll: 0, h: 1.2 };
   async function saveCalib() {
     try { await api.setCamCalib(calib); calibMsg = 'Calibration saved.'; setTimeout(() => (calibMsg = ''), 2500); }
     catch (e) { calibMsg = e.message; }
   }
   function resetCalib() {
-    calib = { ...CALIB_DEFAULTS };
-    calibMsg = 'Reset to defaults (not yet saved).';
+    calib = { ...calib, [cam]: { ...CALIB_DEFAULTS[cam] } };
+    calibMsg = `Reset ${cam} to defaults (not yet saved).`;
   }
 
   // Telemetry sample nearest the current playback time (binary search).
@@ -314,6 +328,7 @@
   function switchCam(id) {
     const at = videoEl?.currentTime || 0;
     cam = id;
+    localStorage.setItem('hc_cam', id);
     loadVideo();
     // Restore position after the new source loads.
     const restore = () => {
@@ -348,6 +363,11 @@
   }
 
   onMount(async () => {
+    // A persisted camera the route doesn't have falls back to Road.
+    if (!cameras.some((c) => c.id === cam)) cam = 'qcamera';
+    // Restore persisted overlay/top-down state (their toggles didn't run).
+    if (showModel || showOverlay) loadModel();
+    if (showOverlay) loadCalib();
     map = new maplibregl.Map({ container: mapEl, style: STYLE, center: [0, 0], zoom: 1 });
     map.on('load', () => { mapReady = true; map.resize(); maybeDraw(); });
     videoEl.addEventListener('timeupdate', () => syncMarker(videoEl.currentTime));
@@ -417,8 +437,8 @@
       {/if}
       <div class="video-wrap" bind:this={videoWrapEl} style="height:{videoH}px">
         <video bind:this={videoEl} controls playsinline muted></video>
-        {#if showOverlay && cam === 'qcamera' && modelFrames.length}
-          <DriveOverlay frames={modelFrames} rpy={modelRpy} {curT} {calib} />
+        {#if overlayOk}
+          <DriveOverlay frames={modelFrames} rpy={modelRpy} {curT} calib={camCalib} fisheye={camCalib?.fisheye} {nw} {nh} />
         {/if}
         <audio bind:this={audioEl} style="display:none"></audio>
         {#if tnow}
@@ -437,8 +457,8 @@
       <div class="ctrl">
         <span class="muted">t = {fmtT(curT)}</span>
         <button class="ghost rate" class:active={showModel} onclick={toggleModel} title="Top-down model view (needs full-res rlog)">Top-down</button>
-        <button class="ghost rate" class:active={showOverlay} onclick={toggleOverlay} title="Model overlay on the road video (Road cam)">Overlay</button>
-        {#if showOverlay && cam === 'qcamera'}
+        <button class="ghost rate" class:active={showOverlay} onclick={toggleOverlay} title="Model overlay on the road video">Overlay</button>
+        {#if showOverlay && OVERLAY_CAMS.includes(cam)}
           <button class="ghost rate" class:active={calibrating} onclick={() => (calibrating = !calibrating)}>Calibrate</button>
         {/if}
         <span class="rates">
@@ -447,21 +467,22 @@
           {/each}
         </span>
       </div>
-      {#if showOverlay && cam !== 'qcamera'}
-        <div class="muted small pad">The overlay is calibrated for the Road (qcamera) view — switch to Road.</div>
+      {#if showOverlay && !OVERLAY_CAMS.includes(cam)}
+        <div class="muted small pad">The overlay needs a road camera — switch to Road, Road HD, or Wide.</div>
       {/if}
-      {#if calibrating && calib}
+      {#if calibrating && camCalib}
         <div class="calib">
-          {#each [['fx', 'focal x', 300, 1400, 1], ['fy', 'focal y', 300, 1400, 1], ['cx', 'center x', 0, 526, 1], ['cy', 'center y', 0, 330, 1], ['pitch', 'pitch', -0.15, 0.15, 0.001], ['yaw', 'yaw', -0.15, 0.15, 0.001], ['h', 'cam height m', 0, 2.5, 0.01]] as [k, label, min, max, step]}
+          <div class="muted small">Calibrating <b>{camLabel}</b>{camCalib.fisheye ? ' · fisheye' : ''}</div>
+          {#each [['fx', camCalib.fisheye ? 'focal' : 'focal x', 100, 3000, 1], ...(camCalib.fisheye ? [] : [['fy', 'focal y', 100, 3000, 1]]), ['cx', 'center x', 0, nw, 1], ['cy', 'center y', 0, nh, 1], ['pitch', 'pitch', -0.2, 0.2, 0.001], ['yaw', 'yaw', -0.2, 0.2, 0.001], ['roll', 'roll', -0.2, 0.2, 0.001], ['h', 'cam height m', 0, 2.5, 0.01]] as [k, label, min, max, step]}
             <label class="crow">
               <span>{label}</span>
-              <input type="range" {min} {max} {step} bind:value={calib[k]} />
-              <span class="cval">{(+calib[k]).toFixed(k === 'pitch' || k === 'yaw' ? 3 : k === 'h' ? 2 : 0)}</span>
+              <input type="range" {min} {max} {step} bind:value={calib[cam][k]} />
+              <span class="cval">{(+calib[cam][k]).toFixed(k === 'pitch' || k === 'yaw' || k === 'roll' ? 3 : k === 'h' ? 2 : 0)}</span>
             </label>
           {/each}
           <div class="cactions">
             <button onclick={saveCalib}>Save calibration</button>
-            <button class="ghost" onclick={resetCalib}>Reset</button>
+            <button class="ghost" onclick={resetCalib}>Reset {camLabel}</button>
             {#if calibMsg}<span class="muted small">{calibMsg}</span>{/if}
           </div>
         </div>

@@ -3,9 +3,7 @@
   // (device frame: x fwd, y right, z down) to qcamera pixels via the calibrated
   // intrinsics + per-drive rpy, then onto the displayed (object-fit:contain) frame.
   // The camera geometry is fixed, so one saved calibration works for every drive.
-  let { frames = [], rpy = [0, 0, 0], curT = 0, calib = null } = $props();
-
-  const QW = 526, QH = 330; // qcamera native pixels
+  let { frames = [], rpy = [0, 0, 0], curT = 0, calib = null, fisheye = false, nw = 526, nh = 330 } = $props();
   let canvas;
 
   // speed → color (blue slow → green fast), tunable alpha.
@@ -41,9 +39,9 @@
     const c = calib;
     if (!frame || !c) return;
 
-    // qcamera px → displayed px (object-fit: contain against QWxQH).
-    const s = Math.min(w / QW, h / QH);
-    const ox = (w - QW * s) / 2, oy = (h - QH * s) / 2;
+    // native camera px → displayed px (object-fit: contain against nw×nh).
+    const s = Math.min(w / nw, h / nh);
+    const ox = (w - nw * s) / 2, oy = (h - nh * s) / 2;
     const R = rot((rpy[0] || 0) + (c.roll || 0), (rpy[1] || 0) + (c.pitch || 0), (rpy[2] || 0) + (c.yaw || 0));
 
     // Project a device/calib-frame point → [displayX, displayY] or null if behind.
@@ -53,8 +51,18 @@
       const dz = R[2][0] * x + R[2][1] * y + R[2][2] * z;
       const vx = dy, vy = dz, vz = dx; // view_frame_from_device_frame
       if (vz <= 1) return null;
-      const u = c.fx * (vx / vz) + c.cx;
-      const v = c.fy * (vy / vz) + c.cy;
+      let u, v;
+      if (fisheye) {
+        // equidistant fisheye: r = f·θ from the optical axis (z forward)
+        const theta = Math.atan2(Math.hypot(vx, vy), vz);
+        const ang = Math.atan2(vy, vx);
+        const r = c.fx * theta;
+        u = c.cx + r * Math.cos(ang);
+        v = c.cy + r * Math.sin(ang);
+      } else {
+        u = c.fx * (vx / vz) + c.cx;
+        v = c.fy * (vy / vz) + c.cy;
+      }
       return [ox + u * s, oy + v * s];
     };
     const projLine = (xy, n) => {

@@ -126,12 +126,31 @@ pub async fn get_cam_calib(
         .await
         .ok()
         .flatten();
-    // qcamera (526x330) is a uniform downscale of the 1928x1208 sensor (focal 2648).
-    // `h` = camera height above the road (m), added to the path/lead z so they sit
-    // on the road (the model path itself is at ~camera height).
-    let defaults = json!({ "fx": 722.4, "fy": 722.4, "cx": 263.0, "cy": 165.0, "pitch": 0.0, "yaw": 0.0, "roll": 0.0, "h": 1.2 });
-    let calib = v.and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(defaults);
-    Ok(Json(calib))
+    // Per-camera calibration. `h` = camera height above the road (m), added to the
+    // path/lead z so they sit on the road. qcamera/fcamera pinhole; ecamera fisheye
+    // (equidistant). qcamera is a uniform downscale of the 1928x1208 sensor (f 2648).
+    let mut out = json!({
+        "qcamera": {"fisheye": false, "fx": 722.4, "fy": 722.4, "cx": 263.0, "cy": 165.0, "pitch": 0.0, "yaw": 0.0, "roll": 0.0, "h": 1.2},
+        "fcamera": {"fisheye": false, "fx": 1846.0, "fy": 1846.0, "cx": 672.0, "cy": 380.0, "pitch": 0.0, "yaw": 0.0, "roll": 0.0, "h": 1.2},
+        "ecamera": {"fisheye": true, "fx": 395.0, "fy": 395.0, "cx": 672.0, "cy": 380.0, "pitch": 0.0, "yaw": 0.0, "roll": 0.0, "h": 1.2}
+    });
+    if let Some(mut saved) = v.and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
+        // Legacy flat format (pre per-camera) → treat as the qcamera profile.
+        if saved.get("qcamera").is_none() && saved.get("fx").is_some() {
+            saved = json!({ "qcamera": saved });
+        }
+        if let (Some(o), Some(s)) = (out.as_object_mut(), saved.as_object()) {
+            for (cam, cv) in s {
+                let entry = o.entry(cam.clone()).or_insert_with(|| json!({}));
+                if let (Some(eo), Some(so)) = (entry.as_object_mut(), cv.as_object()) {
+                    for (k, val) in so {
+                        eo.insert(k.clone(), val.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(Json(out))
 }
 
 /// POST /v1/admin/cam-calib — save the calibration (stored verbatim as JSON).
