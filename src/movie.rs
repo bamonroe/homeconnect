@@ -351,7 +351,7 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
     let ok = if cam == "qcamera" {
         // Already H.264 + AAC interleaved in MPEG-TS (A/V offset preserved) — just
         // remux to a faststart MP4.
-        run(qcamera_copy_args(&v_in, &tmp_s)).await
+        run(state, qcamera_copy_args(&v_in, &tmp_s)).await
     } else {
         // Encode HEVC → H.264 per the configured encode settings; prefer the
         // selected GPU, fall back to CPU.
@@ -359,20 +359,26 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
         let device = transcode::current_device(state).await;
         let mut ok = false;
         if let Some(dev) = &device {
-            ok = run(vaapi_args(dev, &v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
-            if !ok {
+            ok = run(state, vaapi_args(dev, &v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
+            // Don't fall back to CPU on an abort (disable) — only on a real GPU failure.
+            if !ok && is_enabled(state).await {
                 tracing::warn!(%cam, "movie VAAPI encode failed; falling back to CPU");
                 let _ = tokio::fs::remove_file(&tmp).await;
             }
         }
-        if !ok {
-            ok = run(cpu_args(&v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
+        if !ok && is_enabled(state).await {
+            ok = run(state, cpu_args(&v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
         }
         ok
     };
 
     if !ok {
         let _ = tokio::fs::remove_file(&tmp).await;
+        // If encoding was turned off, this was an abort, not a failure — leave it
+        // unrecorded so it rebuilds when encoding is re-enabled.
+        if !is_enabled(state).await {
+            return Err(AppError::Other(anyhow::anyhow!("movie build aborted (encoding disabled)")));
+        }
         // Mark the failed attempt (bytes=0) so it isn't retried at this coverage.
         record(state, &fullname, cam, seg_count, 0, 0.0).await;
         return Err(AppError::Other(anyhow::anyhow!("movie encode failed for {cam}")));
@@ -523,21 +529,38 @@ fn cpu_args(v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, o
     a
 }
 
-/// Run ffmpeg with the build timeout; true on clean exit.
-async fn run(args: Vec<String>) -> bool {
-    matches!(
-        tokio::time::timeout(
-            BUILD_TIMEOUT,
-            Command::new("ffmpeg")
-                .args(&args)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status(),
-        )
-        .await,
-        Ok(Ok(s)) if s.success()
-    )
+/// Run ffmpeg; true on clean exit. Polls the enable toggle every couple seconds
+/// and kills the encode promptly if encoding was turned off mid-run (so the
+/// Settings switch stops work within ~2s, not after the current drive finishes),
+/// and enforces the build timeout. A kill returns false; `build` distinguishes an
+/// abort (still-disabled) from a real failure so it doesn't get marked failed.
+async fn run(state: &AppState, args: Vec<String>) -> bool {
+    let mut child = match Command::new("ffmpeg")
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("movie ffmpeg spawn: {e}");
+            return false;
+        }
+    };
+    let start = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            res = child.wait() => return matches!(res, Ok(s) if s.success()),
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                if !is_enabled(state).await || start.elapsed() > BUILD_TIMEOUT {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 /// Which cameras have a ready movie for a route (+ size/duration), for the UI.
