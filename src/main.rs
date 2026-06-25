@@ -64,6 +64,49 @@ async fn run_cli(state: &AppState, args: &[String]) -> anyhow::Result<()> {
             println!("reparsed {n} segments");
             Ok(())
         }
+        "reparse-model" => {
+            // Build model.json (top-down modelV2) from every stored rlog.
+            let segs: Vec<(String, i64)> = sqlx::query_as(
+                "SELECT canonical_route_name, number FROM segments WHERE rlog_url != '' ORDER BY canonical_route_name, number",
+            )
+            .fetch_all(&state.pool)
+            .await?;
+            let mut n = 0;
+            for (route, seg) in &segs {
+                let Some((dongle, ts)) = route.split_once('|') else { continue };
+                for f in ["rlog.zst", "rlog.bz2"] {
+                    let key = homeconnect::storage::blob_key(dongle, ts, *seg, f);
+                    if let Ok(bytes) = state.blobs.get(&key).await {
+                        if homeconnect::parse::parse_model_and_store(&state, dongle, ts, *seg, f, &bytes).await.is_ok() {
+                            n += 1;
+                        }
+                        break;
+                    }
+                }
+            }
+            println!("built model.json for {n} segments");
+            Ok(())
+        }
+        "qlog-inspect" => {
+            // usage: qlog-inspect <dongle> <ts> <seg> [file]
+            let (dongle, ts, seg) = (&args[1], &args[2], args[3].parse::<i64>().unwrap_or(0));
+            let files: Vec<String> = match args.get(4) {
+                Some(f) => vec![f.clone()],
+                None => vec!["qlog.zst".into(), "qlog.bz2".into()],
+            };
+            for f in &files {
+                let key = homeconnect::storage::blob_key(dongle, ts, seg, f);
+                if let Ok(bytes) = state.blobs.get(&key).await {
+                    println!("# {f} ({} bytes)", bytes.len());
+                    for (k, c) in homeconnect::parse::inspect_qlog(f, &bytes) {
+                        println!("{k}: {c}");
+                    }
+                    return Ok(());
+                }
+            }
+            eprintln!("no log found for {dongle}|{ts}--{seg}");
+            Ok(())
+        }
         "device-pubkey" => {
             println!("{}", homeconnect::device_ssh::public_key(state).await?);
             Ok(())

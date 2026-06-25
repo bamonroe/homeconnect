@@ -6,6 +6,7 @@
   import { api, getToken } from './api.js';
   import ManageData from './ManageData.svelte';
   import DriveGraph from './DriveGraph.svelte';
+  import DriveModel from './DriveModel.svelte';
 
   let { route, onback } = $props();
   let showManage = $state(false);
@@ -134,6 +135,25 @@
     const telemChunks = await Promise.all(nums.map((n) => fetchJson(seg(n, 'telemetry.json'))));
     coords = coordChunks.filter(Boolean).flat();
     telemetry = telemChunks.filter(Boolean).flat();
+  }
+
+  // Top-down model view (modelV2 from the rlog) — lazy-loaded on first toggle.
+  let showModel = $state(false);
+  let modelFrames = $state([]);
+  let modelLoading = $state(false);
+  let modelTried = false;
+  async function loadModel() {
+    if (modelTried) return;
+    modelTried = true;
+    modelLoading = true;
+    const nums = route.segment_numbers?.length ? route.segment_numbers : [0];
+    const chunks = await Promise.all(nums.map((n) => fetchJson(seg(n, 'model.json'))));
+    modelFrames = chunks.filter(Boolean).flatMap((c) => c.frames || []);
+    modelLoading = false;
+  }
+  function toggleModel() {
+    showModel = !showModel;
+    if (showModel) loadModel();
   }
 
   // Telemetry sample nearest the current playback time (binary search).
@@ -388,6 +408,7 @@
       </div>
       <div class="ctrl">
         <span class="muted">t = {fmtT(curT)}</span>
+        <button class="ghost rate" class:active={showModel} onclick={toggleModel} title="Top-down model view (needs full-res rlog)">Top-down</button>
         <span class="rates">
           {#each [0.5, 1, 1.5, 2, 4, 8] as r}
             <button class="ghost rate" class:active={rate === r} onclick={() => setRate(r)}>{r}×</button>
@@ -395,6 +416,15 @@
         </span>
       </div>
       <DriveGraph {telemetry} {curT} onseek={(t) => seek(t * 1000)} />
+      {#if showModel}
+        {#if modelLoading}
+          <div class="muted small pad">Loading model…</div>
+        {:else if modelFrames.length}
+          <DriveModel frames={modelFrames} {curT} />
+        {:else}
+          <div class="muted small pad">No model data — pull full-res (rlog) for this drive first.</div>
+        {/if}
+      {/if}
       <div class="row-resizer" onpointerdown={startRowResize} title="Drag to resize"></div>
       <div class="events">
         <div class="ev-head">Engagements</div>

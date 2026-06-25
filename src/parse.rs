@@ -215,6 +215,155 @@ struct Accum {
     last_state: Option<(bool, i32)>,
 }
 
+// ── modelV2 (top-down "what openpilot saw") — parsed from the rlog ──────────────
+// modelV2 isn't in the qlog (decimated out), so this runs over the full rlog.
+// All points are in the device frame: x = forward (m), y = left (m).
+
+#[derive(serde::Serialize)]
+struct ModelXY {
+    x: Vec<f32>,
+    y: Vec<f32>,
+}
+#[derive(serde::Serialize)]
+struct ModelLead {
+    x: f32,
+    y: f32,
+    v: f32,
+}
+#[derive(serde::Serialize)]
+struct ModelFrame {
+    t: f64,
+    path: ModelXY,
+    lanes: Vec<ModelXY>,
+    edges: Vec<ModelXY>,
+    lead: Option<ModelLead>,
+}
+#[derive(serde::Serialize)]
+struct ModelArtifact {
+    frames: Vec<ModelFrame>,
+}
+
+fn flist(r: ::capnp::Result<::capnp::primitive_list::Reader<'_, f32>>, step: usize) -> Vec<f32> {
+    match r {
+        Ok(l) => l.iter().step_by(step.max(1)).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+fn xy(d: crate::cereal::log_capnp::x_y_z_t_data::Reader<'_>, step: usize) -> ModelXY {
+    ModelXY { x: flist(d.get_x(), step), y: flist(d.get_y(), step) }
+}
+
+/// Extract a downsampled top-down model series from an rlog (path, lane lines,
+/// road edges, lead). Frames thinned to ~5 Hz, points to ~1/3, to keep it light.
+pub fn extract_model(file: &str, raw: &[u8]) -> Vec<ModelFrame> {
+    use crate::cereal::log_capnp::event;
+    const FRAME_STEP: usize = 4; // 20 Hz → ~5 Hz
+    const PT_STEP: usize = 3;
+    let Ok(data) = decompress(file, raw) else { return Vec::new() };
+    let opts = ReaderOptions { traversal_limit_in_words: Some(usize::MAX), nesting_limit: 128 };
+    let mut cursor = std::io::Cursor::new(&data[..]);
+    let mut base: Option<u64> = None;
+    let mut frames = Vec::new();
+    let mut idx = 0usize;
+    while let Ok(reader) = serialize::read_message(&mut cursor, opts) {
+        let Ok(ev) = reader.get_root::<event::Reader>() else { continue };
+        let mono = ev.get_log_mono_time();
+        let b = *base.get_or_insert(mono);
+        let Ok(event::Which::ModelV2(Ok(m))) = ev.which() else { continue };
+        idx += 1;
+        if idx % FRAME_STEP != 0 {
+            continue;
+        }
+        let t = mono.saturating_sub(b) as f64 / 1_000_000_000.0;
+        let path = m.get_position().map(|p| xy(p, PT_STEP)).unwrap_or(ModelXY { x: vec![], y: vec![] });
+        let mut lanes = Vec::new();
+        if let Ok(lls) = m.get_lane_lines() {
+            let probs = m.get_lane_line_probs().ok();
+            for (j, ll) in lls.iter().enumerate() {
+                let prob = match &probs {
+                    Some(p) if (j as u32) < p.len() => p.get(j as u32),
+                    _ => 1.0,
+                };
+                if prob > 0.25 {
+                    lanes.push(xy(ll, PT_STEP));
+                }
+            }
+        }
+        let mut edges = Vec::new();
+        if let Ok(res) = m.get_road_edges() {
+            for re in res.iter() {
+                edges.push(xy(re, PT_STEP));
+            }
+        }
+        let lead = m.get_leads_v3().ok().and_then(|leads| {
+            if leads.len() == 0 {
+                return None;
+            }
+            let l = leads.get(0);
+            if l.get_prob() < 0.5 {
+                return None;
+            }
+            let first = |r: ::capnp::Result<::capnp::primitive_list::Reader<'_, f32>>| {
+                r.ok().and_then(|v| (v.len() > 0).then(|| v.get(0)))
+            };
+            Some(ModelLead {
+                x: first(l.get_x())?,
+                y: first(l.get_y()).unwrap_or(0.0),
+                v: first(l.get_v()).unwrap_or(0.0),
+            })
+        });
+        frames.push(ModelFrame { t, path, lanes, edges, lead });
+    }
+    frames
+}
+
+/// Parse an rlog's modelV2 into a `model.json` artifact for the top-down view.
+pub async fn parse_model_and_store(
+    state: &AppState,
+    dongle: &str,
+    ts: &str,
+    seg: i64,
+    file: &str,
+    raw: &[u8],
+) -> AppResult<()> {
+    let frames = extract_model(file, raw);
+    if frames.is_empty() {
+        return Ok(());
+    }
+    let json = serde_json::to_vec(&ModelArtifact { frames }).unwrap_or_default();
+    let key = blob_key(dongle, ts, seg, "model.json");
+    state
+        .blobs
+        .put(&key, &json)
+        .await
+        .map_err(|e| crate::error::AppError::Other(anyhow::anyhow!("model.json write: {e}")))?;
+    Ok(())
+}
+
+/// Count key event types in a qlog (debug helper for deciding what's available).
+pub fn inspect_qlog(file: &str, raw: &[u8]) -> Vec<(String, usize)> {
+    use std::collections::BTreeMap;
+    let Ok(data) = decompress(file, raw) else { return vec![] };
+    let opts = ReaderOptions { traversal_limit_in_words: Some(usize::MAX), nesting_limit: 128 };
+    let mut cursor = std::io::Cursor::new(&data[..]);
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    while let Ok(reader) = serialize::read_message(&mut cursor, opts) {
+        let Ok(event) = reader.get_root::<event::Reader>() else { continue };
+        let key = match event.which() {
+            Ok(event::Which::ModelV2(_)) => "modelV2",
+            Ok(event::Which::LiveCalibration(_)) => "liveCalibration",
+            Ok(event::Which::CarState(_)) => "carState",
+            Ok(event::Which::SelfdriveState(_)) => "selfdriveState",
+            Ok(event::Which::GpsLocationExternal(_)) | Ok(event::Which::GpsLocation(_)) => "gpsLocation",
+            Ok(event::Which::Thumbnail(_)) => "thumbnail",
+            Ok(_) => "other",
+            Err(_) => "unknown",
+        };
+        *counts.entry(key).or_default() += 1;
+    }
+    counts.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+}
+
 /// Re-parse every stored segment's qlog (regenerates routes/segments + the
 /// coords/events/telemetry/sprite artifacts). Used after parser changes.
 pub async fn reparse_all(state: &AppState) -> AppResult<usize> {

@@ -57,6 +57,12 @@ pub async fn ingest_segment_file(
     let key = blob_key(dongle, timestamp, segment, file);
     let status = store(state, dongle, &key, body).await?;
     register_segment_file(state, dongle, timestamp, segment, file, body).await?;
+    // The rlog carries modelV2 (the qlog doesn't) — derive the top-down artifact.
+    if file.contains("rlog") {
+        if let Err(e) = crate::parse::parse_model_and_store(state, dongle, timestamp, segment, file, body).await {
+            tracing::warn!(%dongle, ts = %timestamp, segment, "model parse failed: {e}");
+        }
+    }
     Ok(status)
 }
 
