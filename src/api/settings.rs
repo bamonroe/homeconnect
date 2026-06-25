@@ -127,7 +127,9 @@ pub async fn get_cam_calib(
         .ok()
         .flatten();
     // qcamera (526x330) is a uniform downscale of the 1928x1208 sensor (focal 2648).
-    let defaults = json!({ "fx": 722.4, "fy": 722.4, "cx": 263.0, "cy": 165.0, "pitch": 0.0, "yaw": 0.0, "roll": 0.0 });
+    // `h` = camera height above the road (m), added to the path/lead z so they sit
+    // on the road (the model path itself is at ~camera height).
+    let defaults = json!({ "fx": 722.4, "fy": 722.4, "cx": 263.0, "cy": 165.0, "pitch": 0.0, "yaw": 0.0, "roll": 0.0, "h": 1.2 });
     let calib = v.and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(defaults);
     Ok(Json(calib))
 }

@@ -168,12 +168,17 @@
     showOverlay = !showOverlay;
     if (showOverlay) {
       loadModel();
-      if (!calib) { try { calib = await api.camCalib(); } catch {} }
+      if (!calib) { try { calib = { ...CALIB_DEFAULTS, ...(await api.camCalib()) }; } catch { calib = { ...CALIB_DEFAULTS }; } }
     }
   }
+  const CALIB_DEFAULTS = { fx: 722.4, fy: 722.4, cx: 263, cy: 165, pitch: 0, yaw: 0, roll: 0, h: 1.2 };
   async function saveCalib() {
     try { await api.setCamCalib(calib); calibMsg = 'Calibration saved.'; setTimeout(() => (calibMsg = ''), 2500); }
     catch (e) { calibMsg = e.message; }
+  }
+  function resetCalib() {
+    calib = { ...CALIB_DEFAULTS };
+    calibMsg = 'Reset to defaults (not yet saved).';
   }
 
   // Telemetry sample nearest the current playback time (binary search).
@@ -447,15 +452,16 @@
       {/if}
       {#if calibrating && calib}
         <div class="calib">
-          {#each [['fx', 'focal x', 300, 1400, 1], ['fy', 'focal y', 300, 1400, 1], ['cx', 'center x', 0, 526, 1], ['cy', 'center y', 0, 330, 1], ['pitch', 'pitch', -0.15, 0.15, 0.001], ['yaw', 'yaw', -0.15, 0.15, 0.001]] as [k, label, min, max, step]}
+          {#each [['fx', 'focal x', 300, 1400, 1], ['fy', 'focal y', 300, 1400, 1], ['cx', 'center x', 0, 526, 1], ['cy', 'center y', 0, 330, 1], ['pitch', 'pitch', -0.15, 0.15, 0.001], ['yaw', 'yaw', -0.15, 0.15, 0.001], ['h', 'cam height m', 0, 2.5, 0.01]] as [k, label, min, max, step]}
             <label class="crow">
               <span>{label}</span>
               <input type="range" {min} {max} {step} bind:value={calib[k]} />
-              <span class="cval">{(+calib[k]).toFixed(k === 'pitch' || k === 'yaw' ? 3 : 0)}</span>
+              <span class="cval">{(+calib[k]).toFixed(k === 'pitch' || k === 'yaw' ? 3 : k === 'h' ? 2 : 0)}</span>
             </label>
           {/each}
           <div class="cactions">
             <button onclick={saveCalib}>Save calibration</button>
+            <button class="ghost" onclick={resetCalib}>Reset</button>
             {#if calibMsg}<span class="muted small">{calibMsg}</span>{/if}
           </div>
         </div>

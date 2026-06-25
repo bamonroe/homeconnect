@@ -72,12 +72,15 @@
     for (const e of frame.edges) stroke(projLine(e), 'rgba(150,160,170,0.55)', 2);
     for (const l of frame.lanes) stroke(projLine(l), 'rgba(230,237,243,0.85)', 2);
 
+    // The path is the car's trajectory at ~camera height; add `h` so it lands on
+    // the road (lanes/edges already carry the road-surface z, so they're unshifted).
+    const ph = c.h ?? 1.2;
     const p = frame.path;
     if (p?.x?.length > 1) {
       const HALF = 0.9;
       const left = [], right = [];
       for (let i = 0; i < p.x.length; i++) {
-        const z = p.z?.[i] ?? 0;
+        const z = (p.z?.[i] ?? 0) + ph;
         const l = proj(p.x[i], p.y[i] - HALF, z);
         const r = proj(p.x[i], p.y[i] + HALF, z);
         if (l) left.push(l);
@@ -95,7 +98,7 @@
     }
 
     if (frame.lead) {
-      const lp = proj(frame.lead.x, frame.lead.y, 0);
+      const lp = proj(frame.lead.x, frame.lead.y, ph);
       if (lp) {
         const sz = Math.max(10, 1400 / Math.max(5, frame.lead.x));
         ctx.strokeStyle = '#f0883e'; ctx.lineWidth = 3;
