@@ -84,6 +84,8 @@ macros).
 | `api/onboard.rs` | serves the host-templated `onboard.sh` (repoint + device-scoped SSH key) |
 | `api/devsync.rs` | `POST /v1/devices/{d}/sync` — manual SSH-pull trigger (`?full=&route=`) |
 | `device_ssh.rs` | homeconnect's device-scoped ed25519 keypair; `run` (command) + `pull_file` (scp) over key-only SSH to `comma@<last_addr>` |
+| `device_params.rs` | curated allowlist of openpilot params; read-all + validated atomic write over SSH (`is_writable` guard) |
+| `api/device_params.rs` | `GET/POST /v1/devices/{d}/params` — read/set the allowlisted device settings (owner/admin) |
 | `devsync.rs` | SSH-pull: `trigger` (on device connect) + optional periodic `spawn`; list `/data/media/0/realdata`, diff vs DB registration, pull/parse missing (qlog+qcamera default; full-res on demand) → `ingest::{ingest,register}_segment_file` |
 | `web/` | Svelte 5 + Vite SPA: Login, Drives (Sync now), Drive (HUD overlay, resizable panes, camera switch, speed, synced audio, Pull full-res), AddDevice, ManageData, Settings |
 
@@ -227,8 +229,14 @@ and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
   Edit it in Manage data → "Auto-sync for this drive" (`GET/POST /v1/route/{fullname}/sync`). The device's `continue.sh` still exports
   `API_HOST` etc. for athena/registration — only the *uploader* is bypassed. An
   in-flight guard in `ConnectionManager` keeps the two triggers from overlapping.
-- Deferred: device settings (read/edit a safe param subset over the same SSH
-  channel — athena has no `setParam`); delete-on-device.
+- **Device settings** (`device_params`): Settings → Device reads/writes a curated
+  allowlist of openpilot params (`RecordFront`, `ExperimentalMode`,
+  `LongitudinalPersonality`, …) over SSH — athena has no `setParam`. Params are
+  0600 files in `/data/params/d`; writes use openpilot's atomic temp-file +
+  `flock`'d rename. Only allowlisted keys with valid values are writable
+  (`is_writable`); read-only `Info` keys (DongleId, GitBranch) are display-only.
+  Add a setting = one `Spec` in `device_params::SPECS`.
+- Deferred: delete-on-device.
 - **EV telemetry (SoC/power): not recoverable** from these logs — investigated and
   parked. openpilot logs the camera/ADAS CAN bus; the BMS/HV traffic is on the
   powertrain CAN behind the gateway and isn't captured (`CarState.fuelGauge` reads

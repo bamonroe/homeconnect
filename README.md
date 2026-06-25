@@ -39,6 +39,9 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
   played in sync over the (silent) full-res/driver cameras, without re-muxing.
 - **Manage data** — per drive, download selected file types as a (stored) zip, or
   delete them off the server.
+- **Device settings** — read and change a curated, safe allowlist of openpilot
+  params (record driver cam / mic, experimental mode, following distance, …) from
+  the browser, written to the device over SSH — a start on replacing sunnylink.
 - **Local accounts** — username/password (Argon2), server-issued JWTs. No OAuth.
 - **Retention** — auto-prune by age / per-device count / total size, with an admin
   settings page.
