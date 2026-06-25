@@ -68,6 +68,7 @@ export const api = {
   me: () => req('GET', '/v1/me'),
   devices: () => req('GET', '/v1/me/devices'),
   myStats: () => req('GET', '/v1/me/stats'),
+  myPaths: () => req('GET', '/v1/me/paths'),
   unpairedDevices: () => req('GET', '/v1/me/unpaired_devices'),
   claim: (dongle) => req('POST', `/v1/devices/${dongle}/claim`),
   // Secure pair-token flow (the code the device shows). Accepts a raw token or

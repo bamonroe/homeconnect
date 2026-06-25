@@ -220,6 +220,60 @@ pub async fn device_stats(
     Ok(Json(json!({ "all": all, "week": all })))
 }
 
+/// GET /v1/me/paths — simplified GPS paths for the user's drives, for the
+/// all-drives map. Each route's segment coords are concatenated + downsampled.
+pub async fn my_paths(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    #[derive(serde::Deserialize)]
+    struct C {
+        lat: f64,
+        lng: f64,
+    }
+    let rows: Vec<(String, String, f64, f64)> = sqlx::query_as(
+        "SELECT fullname, segment_numbers, engaged_meters, telem_meters FROM routes \
+         WHERE maxqlog != -1 AND device_dongle_id IN ( \
+            SELECT dongle_id FROM devices WHERE owner_id = ? OR ? = 1 \
+            UNION SELECT device_dongle_id FROM authorized_users WHERE user_id = ?) \
+         ORDER BY start_time_utc_millis DESC LIMIT 300",
+    )
+    .bind(user.id)
+    .bind(user.is_admin)
+    .bind(user.id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut out: Vec<Value> = Vec::new();
+    for (fullname, segs_json, em, tm) in rows {
+        let Some((dongle, ts)) = fullname.split_once('|') else { continue };
+        let nums: Vec<i64> = serde_json::from_str(&segs_json).unwrap_or_default();
+        let mut pts: Vec<[f64; 2]> = Vec::new();
+        for n in nums {
+            let key = crate::storage::blob_key(dongle, ts, n, "coords.json");
+            if let Ok(bytes) = state.blobs.get(&key).await {
+                if let Ok(arr) = serde_json::from_slice::<Vec<C>>(&bytes) {
+                    for c in arr {
+                        if c.lat != 0.0 || c.lng != 0.0 {
+                            pts.push([c.lng, c.lat]);
+                        }
+                    }
+                }
+            }
+        }
+        let step = (pts.len() / 150).max(1);
+        let ds: Vec<[f64; 2]> = pts.iter().step_by(step).copied().collect();
+        if ds.len() >= 2 {
+            out.push(json!({
+                "fullname": fullname,
+                "autonomy": if tm > 0.0 { 100.0 * em / tm } else { 0.0 },
+                "coords": ds,
+            }));
+        }
+    }
+    Ok(Json(json!(out)))
+}
+
 /// GET /v1/me/stats — all-time driving stats across the user's devices (autonomy,
 /// engagement, hard events). Aggregated from the per-route drive stats.
 pub async fn my_stats(
