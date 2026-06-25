@@ -90,6 +90,9 @@ export const api = {
   routeMovies: (fullname) => req('GET', `/v1/route/${encodeURIComponent(fullname)}/movies`),
   movieUrl: (fullname, cam) =>
     `/v1/route/${encodeURIComponent(fullname)}/movie/${cam}.mp4?sig=${getToken()}`,
+  // action: 'delete' (remove + stop auto-rebuild) or 'rebuild' (re-encode now)
+  movieAction: (fullname, cam, action) =>
+    req('POST', `/v1/route/${encodeURIComponent(fullname)}/movie/${cam}`, { action }),
   // The signed token to append to direct media/artifact fetches.
   sig: () => getToken(),
   // admin: retention

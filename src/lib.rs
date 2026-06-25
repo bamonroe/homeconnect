@@ -100,7 +100,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/route/{fullname}/download", get(api::manage::download))
         .route("/v1/route/{fullname}/delete", post(api::manage::delete))
         .route("/v1/route/{fullname}/movies", get(api::v1::route_movies))
-        .route("/v1/route/{fullname}/movie/{cam}", get(serve::movie))
+        .route("/v1/route/{fullname}/movie/{cam}", get(serve::movie).post(api::v1::route_movie_action))
         .route("/v1/route/{fullname}/{cam}", get(api::v1::camera_m3u8))
         .route("/v1/transcode/{dongle}/{timestamp}/{segment}/{file}", get(serve::transcode))
         .route("/v1/audio/{dongle}/{timestamp}/{segment}/{file}", get(serve::audio))

@@ -648,6 +648,44 @@ pub async fn route_movies(
     Ok(Json(json!({ "movies": crate::movie::status(&state, &fullname).await })))
 }
 
+#[derive(serde::Deserialize)]
+pub struct MovieActionReq {
+    /// "delete" → remove the movie and stop it auto-rebuilding; "rebuild" → clear
+    /// that and re-encode now.
+    pub action: String,
+}
+
+/// POST /v1/route/:fullname/movie/:cam — delete or rebuild a drive's movie. Owner/admin.
+pub async fn route_movie_action(
+    State(state): State<AppState>,
+    Path((fullname, cam)): Path<(String, String)>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<MovieActionReq>,
+) -> AppResult<Json<Value>> {
+    let dongle = fullname
+        .split_once('|')
+        .map(|(d, _)| d.to_string())
+        .ok_or_else(|| AppError::BadRequest("bad route name".into()))?;
+    let ts = fullname.split_once('|').map(|(_, t)| t.to_string()).unwrap_or_default();
+    let device = load_device(&state, &dongle).await?;
+    if !user_owns(&state, &user, &device).await? {
+        return Err(AppError::Forbidden("not authorized for device".into()));
+    }
+    let stem = cam.strip_suffix(".mp4").unwrap_or(&cam);
+    if !crate::movie::MOVIE_CAMS.contains(&stem) {
+        return Err(AppError::BadRequest("unknown camera".into()));
+    }
+    match req.action.as_str() {
+        "delete" => crate::movie::disable(&state, &dongle, &ts, stem).await,
+        "rebuild" => {
+            crate::movie::delete(&state, &dongle, &ts, stem).await;
+            state.movie_queue.request_sweep();
+        }
+        _ => return Err(AppError::BadRequest("action must be delete or rebuild".into())),
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// GET /v1/me/unpaired_devices — devices that have registered (so we know their
 /// key) but aren't yet claimed by anyone. Home onboarding: any logged-in user
 /// can see and claim these.

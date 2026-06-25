@@ -49,6 +49,22 @@
 
   const fmtBytes = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
   let readyMovies = $derived(movies.filter((m) => m.ready));
+  let disabledMovies = $derived(movies.filter((m) => m.disabled));
+
+  async function reloadMovies() {
+    try { const r = await api.routeMovies(route.fullname); movies = r.movies; } catch {}
+  }
+  async function delMovie(cam) {
+    if (!confirm(`Delete the ${TYPE_LABELS[cam] ?? cam} movie?\n\nIt won't be re-encoded automatically (you can rebuild it later). The raw footage is untouched.`)) return;
+    busy = true; error = ''; msg = '';
+    try { await api.movieAction(route.fullname, cam, 'delete'); await reloadMovies(); msg = 'Movie deleted.'; }
+    catch (e) { error = e.message; } finally { busy = false; }
+  }
+  async function rebuildMovie(cam) {
+    busy = true; error = ''; msg = '';
+    try { await api.movieAction(route.fullname, cam, 'rebuild'); await reloadMovies(); msg = 'Re-encoding queued — it’ll reappear shortly.'; }
+    catch (e) { error = e.message; } finally { busy = false; }
+  }
 
   let autoSel = $derived(rs ? rs.all_types.filter((t) => auto[t]) : []);
   let selected = $derived(types.filter((t) => checked[t.id]).map((t) => t.id));
@@ -191,7 +207,7 @@
       <button class="danger ghost" disabled={busy || !selected.length} onclick={delDevice} title="Delete the selected files off the comma to reclaim its storage">Delete from device</button>
     </div>
 
-    {#if readyMovies.length}
+    {#if readyMovies.length || disabledMovies.length}
       <hr />
       <strong>Watchable movies</strong>
       <p class="muted small">
@@ -204,6 +220,14 @@
             <span class="lbl">{TYPE_LABELS[m.cam] ?? m.cam}</span>
             <span class="badge on">{fmtBytes(m.bytes)}</span>
             <a class="dl" href={api.movieUrl(route.fullname, m.cam)} download>Download MP4</a>
+            <button class="danger ghost sm" disabled={busy} onclick={() => delMovie(m.cam)}>Delete</button>
+          </div>
+        {/each}
+        {#each disabledMovies as m}
+          <div class="row">
+            <span class="lbl">{TYPE_LABELS[m.cam] ?? m.cam}</span>
+            <span class="badge">deleted</span>
+            <button class="sm" disabled={busy} onclick={() => rebuildMovie(m.cam)}>Rebuild</button>
           </div>
         {/each}
       </div>
@@ -234,4 +258,5 @@
   .danger.ghost { background: transparent; color: #f85149; border-color: #f85149; }
   .dl { font-size: 12px; color: var(--accent); text-decoration: none; border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; }
   .dl:hover { border-color: var(--accent); }
+  .sm { font-size: 12px; padding: 4px 10px; }
 </style>

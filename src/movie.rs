@@ -457,24 +457,27 @@ pub async fn status(state: &AppState, fullname: &str) -> Vec<Value> {
         Some((d, t)) => (d, t),
         None => return Vec::new(),
     };
-    let rows: Vec<(String, i64, f64)> =
-        sqlx::query_as("SELECT cam, bytes, duration FROM movies WHERE fullname = ?")
+    let rows: Vec<(String, i64, f64, i64)> =
+        sqlx::query_as("SELECT cam, bytes, duration, disabled FROM movies WHERE fullname = ?")
             .bind(fullname)
             .fetch_all(&state.pool)
             .await
             .unwrap_or_default();
     let mut out = Vec::new();
     for cam in MOVIE_CAMS {
-        let row = rows.iter().find(|(c, _, _)| c == cam);
-        let ready = match row {
-            Some(_) => state.blobs.exists(&movie_key(dongle, ts, cam)).await,
-            None => false,
-        };
+        let row = rows.iter().find(|(c, _, _, _)| c == cam);
+        let disabled = row.map(|(_, _, _, d)| *d == 1).unwrap_or(false);
+        let ready = !disabled
+            && match row {
+                Some(_) => state.blobs.exists(&movie_key(dongle, ts, cam)).await,
+                None => false,
+            };
         out.push(json!({
             "cam": cam,
             "ready": ready,
-            "bytes": row.map(|(_, b, _)| *b).unwrap_or(0),
-            "duration": row.map(|(_, _, d)| *d).unwrap_or(0.0),
+            "disabled": disabled,
+            "bytes": row.map(|(_, b, _, _)| *b).unwrap_or(0),
+            "duration": row.map(|(_, _, d, _)| *d).unwrap_or(0.0),
         }));
     }
     out
@@ -496,15 +499,18 @@ pub async fn sweep(state: &AppState) {
                 return;
             }
         };
-    // (fullname, cam) → (seg_count, bytes). bytes==0 marks a known-failed attempt.
-    let built: std::collections::HashMap<(String, String), (i64, i64)> =
-        sqlx::query_as::<_, (String, String, i64, i64)>("SELECT fullname, cam, seg_count, bytes FROM movies")
-            .fetch_all(&state.pool)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(f, c, n, b)| ((f, c), (n, b)))
-            .collect();
+    // (fullname, cam) → (seg_count, bytes, disabled). bytes==0 marks a known-failed
+    // attempt; disabled==1 marks a user-deleted movie that must not auto-rebuild.
+    let built: std::collections::HashMap<(String, String), (i64, i64, i64)> =
+        sqlx::query_as::<_, (String, String, i64, i64, i64)>(
+            "SELECT fullname, cam, seg_count, bytes, disabled FROM movies",
+        )
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(f, c, n, b, d)| ((f, c), (n, b, d)))
+        .collect();
 
     // First pass: gather every movie that needs (re)building, so the badge can
     // show an accurate remaining count before any slow encode starts.
@@ -529,8 +535,10 @@ pub async fn sweep(state: &AppState) {
             }
             let key = (fullname.clone(), cam.to_string());
             let skip = match built.get(&key) {
+                // User-deleted (disabled) → never auto-rebuild.
+                Some((_, _, disabled)) if *disabled == 1 => true,
                 // Already attempted at this exact coverage:
-                Some((sc, bytes)) if *sc == total => {
+                Some((sc, bytes, _)) if *sc == total => {
                     // failed/empty (bytes==0) → don't retry; success → skip iff the
                     // blob is still present (rebuild if it was deleted).
                     *bytes == 0 || state.blobs.exists(&movie_key(&dongle, &ts, cam)).await
@@ -565,8 +573,8 @@ pub async fn sweep(state: &AppState) {
     state.movie_queue.clear().await;
 }
 
-/// Delete a route's movie for one camera (blob + freshness row). Used when its
-/// source segments are deleted off the server so a stale movie isn't left behind.
+/// Delete a route's movie for one camera (blob + freshness row entirely). Used for
+/// "rebuild" (then the sweep rebuilds it) and when its source segments are deleted.
 pub async fn delete(state: &AppState, dongle: &str, ts: &str, cam: &str) {
     let _ = state.blobs.delete(&movie_key(dongle, ts, cam)).await;
     let fullname = format!("{dongle}|{ts}");
@@ -577,6 +585,24 @@ pub async fn delete(state: &AppState, dongle: &str, ts: &str, cam: &str) {
         .await;
 }
 
+/// User-delete a route's movie: remove the blob and mark it `disabled` so the
+/// background sweep won't rebuild it (until an explicit rebuild clears the row).
+pub async fn disable(state: &AppState, dongle: &str, ts: &str, cam: &str) {
+    let _ = state.blobs.delete(&movie_key(dongle, ts, cam)).await;
+    let fullname = format!("{dongle}|{ts}");
+    let now = crate::db::now_secs();
+    let _ = sqlx::query(
+        "INSERT INTO movies (fullname, cam, seg_count, bytes, duration, built_at, disabled) \
+         VALUES (?, ?, 0, 0, 0, ?, 1) \
+         ON CONFLICT(fullname, cam) DO UPDATE SET disabled = 1, bytes = 0",
+    )
+    .bind(&fullname)
+    .bind(cam)
+    .bind(now)
+    .execute(&state.pool)
+    .await;
+}
+
 /// Spawn the background movie-builder sweep. The on/off toggle and interval are
 /// re-read every cycle, so both can be changed from Settings without a restart
 /// (`HC_MOVIE_ENABLED`/`HC_MOVIE_INTERVAL_SECS` only seed the defaults).
@@ -585,7 +611,10 @@ pub fn spawn(state: AppState) {
     tokio::spawn(async move {
         // Clear prior failed/empty markers so a code change gets one fresh attempt
         // per restart (genuinely-empty drives just re-mark and stop retrying).
-        let _ = sqlx::query("DELETE FROM movies WHERE bytes = 0").execute(&state.pool).await;
+        // User-disabled rows (bytes=0 too) are preserved.
+        let _ = sqlx::query("DELETE FROM movies WHERE bytes = 0 AND disabled = 0")
+            .execute(&state.pool)
+            .await;
         loop {
             if !is_enabled(&state).await {
                 // Encoding off; poll for re-enable without sweeping.
