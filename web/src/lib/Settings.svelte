@@ -21,9 +21,9 @@
   async function load() {
     error = '';
     try {
-      cfg = await api.retention();
-      tc = await api.transcode();
-      sync = await api.syncSettings();
+      // Fetch concurrently — one round trip instead of three sequential ones.
+      const [c, t, s] = await Promise.all([api.retention(), api.transcode(), api.syncSettings()]);
+      cfg = c; tc = t; sync = s;
     } catch (e) {
       error = e.message;
     }

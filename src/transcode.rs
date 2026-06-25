@@ -48,16 +48,31 @@ pub async fn set_device(state: &AppState, value: &str) -> AppResult<()> {
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct DeviceOption {
     pub value: String,  // "cpu" or a DRM render node path
     pub label: String,  // human-friendly
     pub encodes: bool,   // can it H.264-encode via VAAPI?
 }
 
+/// The GPU set is fixed for the process lifetime, but probing it (`vainfo` per
+/// node) is slow on the first call — so probe once and cache. `warm()` fills this
+/// at startup so the first Settings load doesn't pay for it.
+static DEVICE_CACHE: tokio::sync::OnceCell<Vec<DeviceOption>> = tokio::sync::OnceCell::const_new();
+
+/// Probe + cache the transcode device list (cheap after the first call).
+pub async fn list_devices() -> Vec<DeviceOption> {
+    DEVICE_CACHE.get_or_init(probe_devices).await.clone()
+}
+
+/// Warm the device cache in the background (call once at startup).
+pub fn warm() {
+    tokio::spawn(async { let _ = list_devices().await; });
+}
+
 /// Enumerate the transcode devices the server can use: always CPU, plus each
 /// DRM render node (probed via vainfo for a friendly name + encode capability).
-pub async fn list_devices() -> Vec<DeviceOption> {
+async fn probe_devices() -> Vec<DeviceOption> {
     let mut out = vec![DeviceOption {
         value: "cpu".into(),
         label: "CPU (libx264, ultrafast)".into(),

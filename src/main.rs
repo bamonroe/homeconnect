@@ -28,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
     retention::spawn(state.clone());
     homeconnect::devsync::spawn_workers(state.clone());
     homeconnect::devsync::spawn(state.clone());
+    homeconnect::transcode::warm(); // probe GPUs once now, not on first Settings load
 
     let app = router(state.clone());
     let listener = tokio::net::TcpListener::bind(&state.config.bind).await?;
