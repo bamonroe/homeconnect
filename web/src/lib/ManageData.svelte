@@ -100,13 +100,30 @@
     a.remove();
   }
 
-  async function del() {
+  async function delServer() {
     if (!selSynced.length) return;
     if (!confirm(`Delete these off the server for this drive?\n\n${selSynced.join(', ')}\n\nThey won't be re-synced (this drive's auto-sync is updated). This cannot be undone.`)) return;
     busy = true; error = '';
     try {
-      const r = await api.deleteData(route.fullname, selSynced);
+      const r = await api.deleteData(route.fullname, selSynced, 'server');
       onchanged?.(r);
+    } catch (e) {
+      error = e.message;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function delDevice() {
+    if (!selected.length) return;
+    const notBacked = selected.filter((id) => !types.find((t) => t.id === id)?.synced);
+    let warn = `Delete these off the comma device for this drive?\n\n${selected.join(', ')}\n\nThis frees space on the device and cannot be undone. The device must be online.`;
+    if (notBacked.length) warn += `\n\n⚠ Not on the server, so these copies will be lost entirely: ${notBacked.join(', ')}`;
+    if (!confirm(warn)) return;
+    busy = true; error = ''; msg = '';
+    try {
+      const r = await api.deleteData(route.fullname, selected, 'device');
+      msg = `Removed ${r.device_removed} file(s) from the device.`;
     } catch (e) {
       error = e.message;
     } finally {
@@ -163,7 +180,8 @@
         {busy ? 'Working…' : 'Pull from device'}
       </button>
       <button class="ghost" disabled={!selSynced.length} onclick={download}>Download (.zip)</button>
-      <button class="danger" disabled={busy || !selSynced.length} onclick={del}>Delete</button>
+      <button class="danger" disabled={busy || !selSynced.length} onclick={delServer}>Delete from server</button>
+      <button class="danger ghost" disabled={busy || !selected.length} onclick={delDevice} title="Delete the selected files off the comma to reclaim its storage">Delete from device</button>
     </div>
   </div>
 </div>
@@ -188,4 +206,5 @@
   .badge.on { color: #3fb950; border-color: #2ea043; }
   .actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
   .danger { background: #f85149; }
+  .danger.ghost { background: transparent; color: #f85149; border-color: #f85149; }
 </style>

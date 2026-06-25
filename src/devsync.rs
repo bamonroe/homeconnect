@@ -30,6 +30,8 @@ const INTERVAL_KEY: &str = "sync_interval";
 const MIN_INTERVAL_SECS: u64 = 10;
 /// settings-table key for the default set of data types to sync.
 const TYPES_KEY: &str = "sync_types";
+/// settings-table key for the "delete device copy after a safe pull" toggle.
+const AUTOPRUNE_KEY: &str = "device_autoprune";
 /// The selectable data types (qlog is always synced — the route needs it — so it
 /// isn't listed here).
 pub const OPTIONAL_TYPES: [&str; 5] = ["qcamera", "fcamera", "dcamera", "ecamera", "rlog"];
@@ -100,6 +102,27 @@ pub async fn get_interval(state: &AppState) -> u64 {
 /// Set the loop interval (seconds; 0 disables the loop).
 pub async fn set_interval(state: &AppState, secs: u64) -> AppResult<()> {
     put_setting(state, INTERVAL_KEY, &secs.to_string()).await
+}
+
+/// Is auto-prune on? When set, a file's device copy is deleted right after it's
+/// safely pulled + stored (reclaims device space; only ever deletes what we hold).
+/// Runtime setting, falling back to `HC_DEVICE_AUTOPRUNE` (default off).
+pub async fn is_autoprune_enabled(state: &AppState) -> bool {
+    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(AUTOPRUNE_KEY)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+    match v {
+        Some(s) => s == "1" || s.eq_ignore_ascii_case("true"),
+        None => state.config.device_autoprune,
+    }
+}
+
+/// Set the auto-prune toggle.
+pub async fn set_autoprune(state: &AppState, on: bool) -> AppResult<()> {
+    put_setting(state, AUTOPRUNE_KEY, if on { "1" } else { "0" }).await
 }
 
 /// Every selectable data type (full set), for the "Pull full-res" / sync-all path.
@@ -398,6 +421,8 @@ async fn process_item(state: &AppState, item: QueueItem) {
         };
         if let Err(e) = register_segment_file(state, &dongle, &ts, seg, &file, &body).await {
             tracing::warn!("devsync register {key}: {e}");
+        } else {
+            maybe_prune(state, &addr, &dongle, &ts, seg, &file, &key).await;
         }
         return;
     }
@@ -423,8 +448,9 @@ async fn process_item(state: &AppState, item: QueueItem) {
     .await;
 
     let _ = tokio::fs::remove_file(&local).await;
-    if let Err(e) = res {
-        tracing::warn!("devsync pull {key}: {e}");
+    match res {
+        Ok(()) => maybe_prune(state, &addr, &dongle, &ts, seg, &file, &key).await,
+        Err(e) => tracing::warn!("devsync pull {key}: {e}"),
     }
 }
 
@@ -494,6 +520,67 @@ fn parse_remote_path(path: &str) -> Option<(String, i64, String)> {
     Some((ts.to_string(), seg, file.to_string()))
 }
 
+/// Delete specific segment files for one route off the **device** over SSH.
+/// `files` is a list of `(segment, filename)`. Only the device copies are touched
+/// (the caller manages the server's blobs separately). Returns how many of the
+/// requested files actually existed and were removed. Requires the device online.
+pub async fn delete_on_device(
+    state: &AppState,
+    device: &Device,
+    ts: &str,
+    files: &[(i64, String)],
+) -> AppResult<usize> {
+    if device.last_addr.is_empty() {
+        return Err(crate::error::AppError::BadRequest(
+            "device address unknown (not seen online yet)".into(),
+        ));
+    }
+    if !safe_component(ts) {
+        return Err(crate::error::AppError::BadRequest("bad route id".into()));
+    }
+    // Build absolute remote paths, skipping anything with shell-unsafe characters.
+    let paths: Vec<String> = files
+        .iter()
+        .filter(|(_, name)| safe_component(name))
+        .map(|(seg, name)| format!("{REALDATA_DIR}/{ts}--{seg}/{name}"))
+        .collect();
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    // Per path: if it exists, remove it and echo it (so we count only what was
+    // really there). Trailing `true` keeps the overall exit status 0 even when the
+    // last file was already gone (so `run` doesn't treat it as a failure).
+    let script = paths
+        .iter()
+        .map(|p| format!("[ -e '{p}' ] && rm -f '{p}' && echo '{p}'"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let out = device_ssh::run(state, &device.last_addr, &format!("{script}; true")).await?;
+    let removed = out.lines().filter(|l| !l.trim().is_empty()).count();
+    tracing::info!(dongle = %device.dongle_id, %ts, removed, "devsync: deleted files on device");
+    Ok(removed)
+}
+
+/// A path component is safe to embed in a single-quoted shell word iff it's a plain
+/// `[A-Za-z0-9._-]` token (no quotes/metacharacters). realdata ids/filenames always are.
+fn safe_component(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// If auto-prune is on and we now hold the blob, delete the device's copy of this
+/// one file to reclaim space. Best-effort: a failure just leaves it for next time.
+/// Never deletes a file we don't already have stored.
+async fn maybe_prune(state: &AppState, addr: &str, dongle: &str, ts: &str, seg: i64, file: &str, key: &str) {
+    if !is_autoprune_enabled(state).await || !state.blobs.exists(key).await || !safe_component(file) {
+        return;
+    }
+    let remote = format!("{REALDATA_DIR}/{ts}--{seg}/{file}");
+    match device_ssh::run(state, addr, &format!("rm -f '{remote}'")).await {
+        Ok(_) => tracing::debug!(%dongle, %ts, seg, %file, "autoprune: removed device copy"),
+        Err(e) => tracing::warn!(%dongle, %ts, seg, %file, "autoprune: {e}"),
+    }
+}
+
 /// Map a filename to its optional data-type token (`None` for qlog/unknown).
 fn file_type(file: &str) -> Option<&'static str> {
     OPTIONAL_TYPES.iter().copied().find(|t| file.contains(t))
@@ -547,6 +634,20 @@ mod tests {
         assert!(!wanted("random.txt", &all));
         assert_eq!(file_type("dcamera.hevc"), Some("dcamera"));
         assert_eq!(file_type("qlog.zst"), None);
+    }
+
+    #[test]
+    fn safe_components() {
+        // realdata ids and filenames are plain tokens.
+        assert!(safe_component("00000009--f3d1ef15b7"));
+        assert!(safe_component("qcamera.ts"));
+        assert!(safe_component("qlog.zst"));
+        // shell-dangerous or empty strings are rejected (no single-quote escape).
+        assert!(!safe_component(""));
+        assert!(!safe_component("a'; rm -rf /"));
+        assert!(!safe_component("a b"));
+        assert!(!safe_component("$(whoami)"));
+        assert!(!safe_component("../etc"));
     }
 
     #[test]

@@ -75,6 +75,7 @@ pub async fn get_sync(
         "interval_secs": crate::devsync::get_interval(&state).await,
         "types": crate::devsync::get_sync_types(&state).await,
         "all_types": crate::devsync::all_types(),
+        "autoprune": crate::devsync::is_autoprune_enabled(&state).await,
     })))
 }
 
@@ -83,6 +84,7 @@ pub struct SyncSettings {
     pub enabled: Option<bool>,
     pub interval_secs: Option<u64>,
     pub types: Option<Vec<String>>,
+    pub autoprune: Option<bool>,
 }
 
 /// POST /v1/admin/sync — update the on/off toggle and/or loop interval (runtime;
@@ -105,12 +107,17 @@ pub async fn set_sync(
         crate::devsync::set_sync_types(&state, types).await?;
         tracing::info!(user = %user.username, "sync types set to {:?}", types);
     }
+    if let Some(on) = req.autoprune {
+        crate::devsync::set_autoprune(&state, on).await?;
+        tracing::info!(user = %user.username, "device autoprune {}", if on { "on" } else { "off" });
+    }
     Ok(Json(json!({
         "ok": true,
         "enabled": crate::devsync::is_enabled(&state).await,
         "interval_secs": crate::devsync::get_interval(&state).await,
         "types": crate::devsync::get_sync_types(&state).await,
         "all_types": crate::devsync::all_types(),
+        "autoprune": crate::devsync::is_autoprune_enabled(&state).await,
     })))
 }
 

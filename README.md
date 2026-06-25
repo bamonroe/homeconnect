@@ -38,7 +38,9 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
 - **Split audio** — the qcamera mic track is extracted to a separate file and
   played in sync over the (silent) full-res/driver cameras, without re-muxing.
 - **Manage data** — per drive, download selected file types as a (stored) zip, or
-  delete them off the server.
+  delete them off the server **and/or off the comma device** (over SSH) to reclaim
+  the device's storage. Auto-prune (Settings) can delete each device copy right
+  after it's safely pulled here — it only ever removes files the server already holds.
 - **Device settings** — read and change a curated, safe allowlist of openpilot
   params (record driver cam / mic, experimental mode, following distance, …) from
   the browser, written to the device over SSH — a start on replacing sunnylink.
@@ -125,6 +127,7 @@ All via env (`.env` for secrets):
 | `HC_SYNC_ENABLED` | `true` | default for the runtime sync toggle (Settings → Automatic drive sync) |
 | `HC_SYNC_INTERVAL_SECS` | `60` | default for the runtime interval (Settings); `0` = connect-trigger only |
 | `HC_SYNC_FULLRES` | `false` | seeds the default synced data types (on → all cameras + rlog; off → Road only). Editable at Settings → Automatic drive sync |
+| `HC_DEVICE_AUTOPRUNE` | `false` | seeds the runtime "delete device copy after a safe pull" toggle (Settings → Automatic drive sync → Reclaim device storage). Only deletes files already stored here |
 
 Retention and the transcode device are overridable at runtime from the admin
 **Settings** page (the env values are just defaults).

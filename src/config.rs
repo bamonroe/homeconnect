@@ -34,6 +34,10 @@ pub struct Config {
     /// Whether the background pass also pulls full-res cameras + rlog (14G+);
     /// off by default — full-res is pulled on demand per route.
     pub sync_fullres: bool,
+    /// After a file is safely pulled + stored, delete the device's copy to reclaim
+    /// its space. Off by default (the device rotates its own storage); a runtime
+    /// toggle seeds from this. Only ever deletes files we already hold.
+    pub device_autoprune: bool,
 }
 
 impl Config {
@@ -56,6 +60,7 @@ impl Config {
             sync_enabled: env_or("HC_SYNC_ENABLED", "true").parse().unwrap_or(true),
             sync_interval_secs: env_or("HC_SYNC_INTERVAL_SECS", "60").parse().unwrap_or(60),
             sync_fullres: env_or("HC_SYNC_FULLRES", "false").parse().unwrap_or(false),
+            device_autoprune: env_or("HC_DEVICE_AUTOPRUNE", "false").parse().unwrap_or(false),
         }
     }
 

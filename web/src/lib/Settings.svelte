@@ -42,6 +42,21 @@
     }
   }
 
+  async function toggleAutoprune(e) {
+    const on = e.currentTarget.checked;
+    busy = true; error = ''; msg = '';
+    try {
+      await api.setSync({ autoprune: on });
+      sync.autoprune = on;
+      msg = on ? 'Device copies will be deleted after sync.' : 'Device copies will be kept.';
+    } catch (err) {
+      error = err.message;
+      e.currentTarget.checked = !on; // revert on failure
+    } finally {
+      busy = false;
+    }
+  }
+
   function onType(t, e) {
     sync.types = e.currentTarget.checked
       ? [...sync.types, t]
@@ -177,6 +192,16 @@
         <div class="actions">
           <button disabled={busy} onclick={saveTypes}>Save default data</button>
         </div>
+
+        <h4>Reclaim device storage</h4>
+        <p class="muted small">
+          After a file is safely pulled and stored here, delete the device's copy to free its
+          storage. Only ever deletes files this server already holds — never anything unsynced.
+        </p>
+        <label class="toggle">
+          <input type="checkbox" checked={sync.autoprune} disabled={busy} onchange={toggleAutoprune} />
+          <span>{sync.autoprune ? 'Auto-delete device copies after sync' : 'Keep device copies (device rotates its own storage)'}</span>
+        </label>
       </div>
     {/if}
 

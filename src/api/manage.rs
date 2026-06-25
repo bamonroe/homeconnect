@@ -160,10 +160,14 @@ pub async fn download(
 #[derive(Deserialize)]
 pub struct DeleteReq {
     pub types: Vec<String>,
+    /// Where to delete: `"server"` (default), `"device"`, or `"both"`.
+    #[serde(default)]
+    pub target: Option<String>,
 }
 
-/// POST /v1/route/:fullname/delete {types:[...]} — delete selected file types
-/// off the server (blobs + transcode cache), then re-aggregate the route.
+/// POST /v1/route/:fullname/delete {types:[...], target} — delete selected file
+/// types off the **server** (blobs + transcode cache, then re-aggregate) and/or
+/// off the **device** (over SSH). `target` selects which.
 pub async fn delete(
     State(state): State<AppState>,
     Path(fullname): Path<String>,
@@ -174,44 +178,72 @@ pub async fn delete(
     require_owner(&state, &user, &dongle).await?;
     let segs = segment_numbers(&state, &fullname).await?;
 
-    let mut removed = 0u64;
-    let mut freed = 0u64;
-    for &seg in &segs {
-        for t in &req.types {
-            let Some((names, col)) = type_spec(t) else { continue };
-            for name in names {
-                let key = blob_key(&dongle, &ts, seg, name);
-                if let Some(sz) = state.blobs.size(&key).await {
-                    let _ = state.blobs.delete(&key).await;
-                    removed += 1;
-                    freed += sz;
-                }
-            }
-            clear_segment_col(&state, &dongle, &ts, seg, col).await;
-            // Camera transcode caches become stale once the source is gone.
-            for cam in ["fcamera", "dcamera", "ecamera"] {
-                if t == cam {
-                    let p = state.config.transcode_dir().join(format!("{dongle}_{ts}--{seg}--{cam}.ts"));
-                    let _ = tokio::fs::remove_file(&p).await;
+    let target = req.target.as_deref().unwrap_or("server");
+    let do_server = matches!(target, "server" | "both");
+    let do_device = matches!(target, "device" | "both");
+    if !do_server && !do_device {
+        return Err(AppError::BadRequest("target must be server, device, or both".into()));
+    }
+
+    // --- Device delete (SSH): remove the selected types' files from the comma. ---
+    let mut device_removed = 0usize;
+    if do_device {
+        let device = crate::access::load_device(&state, &dongle)
+            .await?
+            .ok_or_else(|| AppError::NotFound("unknown device".into()))?;
+        let mut files: Vec<(i64, String)> = Vec::new();
+        for &seg in &segs {
+            for t in &req.types {
+                let Some((names, _)) = type_spec(t) else { continue };
+                for name in names {
+                    files.push((seg, name.to_string()));
                 }
             }
         }
+        device_removed = crate::devsync::delete_on_device(&state, &device, &ts, &files).await?;
     }
 
-    crate::parse::recompute_route(&state, &dongle, &ts).await?;
+    // --- Server delete: blobs + stale transcode caches, then re-aggregate. ---
+    let mut removed = 0u64;
+    let mut freed = 0u64;
+    if do_server {
+        for &seg in &segs {
+            for t in &req.types {
+                let Some((names, col)) = type_spec(t) else { continue };
+                for name in names {
+                    let key = blob_key(&dongle, &ts, seg, name);
+                    if let Some(sz) = state.blobs.size(&key).await {
+                        let _ = state.blobs.delete(&key).await;
+                        removed += 1;
+                        freed += sz;
+                    }
+                }
+                clear_segment_col(&state, &dongle, &ts, seg, col).await;
+                // Camera transcode caches become stale once the source is gone.
+                for cam in ["fcamera", "dcamera", "ecamera"] {
+                    if t == cam {
+                        let p = state.config.transcode_dir().join(format!("{dongle}_{ts}--{seg}--{cam}.ts"));
+                        let _ = tokio::fs::remove_file(&p).await;
+                    }
+                }
+            }
+        }
 
-    // Don't let sync re-pull what was just deleted: pin this drive's sync types to
-    // the current effective set minus the deleted types (an explicit per-drive
-    // override). The user can re-enable them in Manage data.
-    let kept: Vec<String> = crate::devsync::effective_route_types(&state, &fullname)
-        .await
-        .into_iter()
-        .filter(|t| !req.types.contains(t))
-        .collect();
-    let _ = crate::devsync::set_route_override(&state, &fullname, Some(&kept)).await;
+        crate::parse::recompute_route(&state, &dongle, &ts).await?;
 
-    tracing::info!(%fullname, removed, freed, "manage: deleted files");
-    Ok(Json(json!({ "removed": removed, "freed_bytes": freed })))
+        // Don't let sync re-pull what was just deleted: pin this drive's sync types
+        // to the current effective set minus the deleted types (an explicit
+        // per-drive override). The user can re-enable them in Manage data.
+        let kept: Vec<String> = crate::devsync::effective_route_types(&state, &fullname)
+            .await
+            .into_iter()
+            .filter(|t| !req.types.contains(t))
+            .collect();
+        let _ = crate::devsync::set_route_override(&state, &fullname, Some(&kept)).await;
+    }
+
+    tracing::info!(%fullname, removed, freed, device_removed, %target, "manage: deleted files");
+    Ok(Json(json!({ "removed": removed, "freed_bytes": freed, "device_removed": device_removed })))
 }
 
 /// Clear a segment's URL column for a deleted type (static SQL per column).

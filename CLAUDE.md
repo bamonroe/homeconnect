@@ -80,7 +80,7 @@ macros).
 | `api/v1.rs` | `upload_url(s)`, device info/location/stats, `my_devices`/`unpaired_devices`/`claim`, `routes_segments`, `camera_m3u8` (qcamera + transcoded cams + audio) |
 | `api/v2.rs` | `pilotauth` (register), `pilotpair` |
 | `api/settings.rs` | admin retention + transcode-device + sync on/off toggle GET/POST + run-now |
-| `api/manage.rs` | per-route download (streamed stored zip) + local delete of selected types |
+| `api/manage.rs` | per-route download (streamed stored zip) + delete selected types off the server and/or the device (`target`) |
 | `api/onboard.rs` | serves the host-templated `onboard.sh` (repoint + device-scoped SSH key) |
 | `api/devsync.rs` | `POST /v1/devices/{d}/sync` — manual SSH-pull trigger (`?full=&route=`) |
 | `device_ssh.rs` | homeconnect's device-scoped ed25519 keypair; `run` (command) + `pull_file` (scp) over key-only SSH to `comma@<last_addr>` |
@@ -251,7 +251,21 @@ and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
   device over SSH (right after the edit if online, else on next connect via
   `on_connect`), and `refresh` reads actuals back without clobbering pending. The
   athena connect handler calls `device_params::on_connect` (flush + refresh).
-- Deferred: delete-on-device.
+- **Device delete + auto-prune** (reclaim the comma's storage over the same SSH
+  channel). Manual: Manage data → **Delete from device** removes the selected
+  types' files for that drive off `/data/media/0/realdata/<ts>--<seg>/` (the
+  device must be online; `devsync::delete_on_device` builds single-quoted,
+  `safe_component`-validated paths and `rm -f`s them, counting what existed).
+  `POST /v1/route/{fullname}/delete` now takes `target: "server" | "device" |
+  "both"` (default `server`; server delete is unchanged). Auto: Settings →
+  Automatic drive sync → **Reclaim device storage** toggle
+  (`devsync::is_autoprune_enabled`/`set_autoprune`, key `device_autoprune`, seeded
+  from `HC_DEVICE_AUTOPRUNE`, default off) — `process_item` deletes a file's device
+  copy right after it's pulled + stored, gated on `blobs.exists` so it **never**
+  deletes anything we don't already hold (files not in the synced type set stay on
+  the device). Caveat: don't expect auto-prune to reclaim the 14 GB of hevc unless
+  full-res is in the synced set; by default only qlog+qcamera are pulled (and thus
+  prunable).
 - **EV telemetry (SoC/power): not recoverable** from these logs — investigated and
   parked. openpilot logs the camera/ADAS CAN bus; the BMS/HV traffic is on the
   powertrain CAN behind the gateway and isn't captured (`CarState.fuelGauge` reads

@@ -121,6 +121,7 @@ export const api = {
   // manage data
   downloadUrl: (fullname, types) =>
     `/v1/route/${encodeURIComponent(fullname)}/download?types=${types.join(',')}&sig=${getToken()}`,
-  deleteData: (fullname, types) =>
-    req('POST', `/v1/route/${encodeURIComponent(fullname)}/delete`, { types }),
+  // target: 'server' (default), 'device', or 'both'.
+  deleteData: (fullname, types, target = 'server') =>
+    req('POST', `/v1/route/${encodeURIComponent(fullname)}/delete`, { types, target }),
 };
