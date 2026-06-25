@@ -61,42 +61,84 @@
   let rate = $state(1);    // playback speed
   let cam = $state(localStorage.getItem('hc_cam') || 'qcamera');
 
-  // Resizable panes (persisted). rightW = width of the video/events column;
-  // videoH = height of the video within that column.
-  let gridEl, videoWrapEl;
-  let rightW = $state(Number(localStorage.getItem('hc_rightW')) || 620);
-  let videoH = $state(Number(localStorage.getItem('hc_videoH')) || 400);
-
-  function startColResize(e) {
-    e.preventDefault();
-    const rect = gridEl.getBoundingClientRect();
-    const move = (ev) => {
-      rightW = Math.max(280, Math.min(rect.width - 220, rect.right - ev.clientX));
-      map?.resize();
-    };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      localStorage.setItem('hc_rightW', rightW);
-      map?.resize();
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+  // Movable panes. Each pane has an id, a width (half/full of the row) and a
+  // pixel height; the order in the array is the on-screen order. Drag a pane's
+  // header onto another to swap them; both layout + sizes persist.
+  const PANE_TITLES = { video: 'Video', map: 'Map', graph: 'Timeline', topdown: 'Top-down', events: 'Engagements' };
+  const DEFAULT_PANES = [
+    { id: 'video', w: 'half', h: 440 },
+    { id: 'map', w: 'half', h: 440 },
+    { id: 'graph', w: 'full', h: 175 },
+    { id: 'topdown', w: 'full', h: 360 },
+    { id: 'events', w: 'full', h: 220 },
+  ];
+  function loadPanes() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('hc_drive_panes') || 'null');
+      if (Array.isArray(saved) && saved.length) {
+        const order = saved.map((p) => p.id);
+        const byId = Object.fromEntries(saved.map((p) => [p.id, p]));
+        // Keep saved order/sizes; append any pane ids added since (new features).
+        const merged = DEFAULT_PANES.map((d) => ({ ...d, ...(byId[d.id] || {}) }));
+        merged.sort((a, b) => {
+          const ai = order.indexOf(a.id), bi = order.indexOf(b.id);
+          return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi);
+        });
+        return merged;
+      }
+    } catch {}
+    return structuredClone(DEFAULT_PANES);
   }
+  let panes = $state(loadPanes());
+  let dragId = $state(null);
+  let overId = $state(null);
+  // Top-down only appears when enabled; the others are always shown.
+  let visiblePanes = $derived(panes.filter((p) => p.id !== 'topdown' || showModel));
 
-  function startRowResize(e) {
-    e.preventDefault();
-    const move = (ev) => {
-      const top = videoWrapEl.getBoundingClientRect().top;
-      videoH = Math.max(120, ev.clientY - top);
-    };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      localStorage.setItem('hc_videoH', videoH);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+  let saveTimer;
+  function savePanes() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => localStorage.setItem('hc_drive_panes', JSON.stringify(panes)), 200);
+  }
+  function onDragStart(id, e) {
+    dragId = id;
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', id); } catch {}
+  }
+  function onDrop(targetId) {
+    overId = null;
+    const from = panes.findIndex((p) => p.id === dragId);
+    const to = panes.findIndex((p) => p.id === targetId);
+    dragId = null;
+    if (from < 0 || to < 0 || from === to) return;
+    [panes[from], panes[to]] = [panes[to], panes[from]];
+    panes = [...panes];
+    savePanes();
+    setTimeout(() => map?.resize(), 0);
+  }
+  function toggleWidth(id) {
+    const p = panes.find((p) => p.id === id);
+    if (p) { p.w = p.w === 'half' ? 'full' : 'half'; panes = [...panes]; savePanes(); setTimeout(() => map?.resize(), 0); }
+  }
+  function resetLayout() {
+    panes = structuredClone(DEFAULT_PANES);
+    localStorage.removeItem('hc_drive_panes');
+    setTimeout(() => map?.resize(), 0);
+  }
+  // Svelte action: apply the saved height, and persist + reflow on native resize.
+  function paneSize(node, p) {
+    node.style.height = p.h + 'px';
+    let raf;
+    const ro = new ResizeObserver(() => {
+      const h = node.offsetHeight;
+      if (h && Math.abs(h - p.h) >= 1) {
+        p.h = h;
+        savePanes();
+        if (p.id === 'map') { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => map?.resize()); }
+      }
+    });
+    ro.observe(node);
+    return { destroy() { ro.disconnect(); } };
   }
 
   // Which cameras this route actually has (from the route's max* fields).
@@ -424,6 +466,7 @@
       {pulling ? 'Working…' : 'Sync'}
     </button>
     <button class="ghost manage" onclick={() => (showManage = true)}>Manage data</button>
+    <button class="ghost" onclick={resetLayout} title="Reset the pane layout to default">Reset layout</button>
   </div>
 
   {#if pullMsg}<div class="muted pad">{pullMsg}</div>{/if}
@@ -450,96 +493,122 @@
 
   {#if error}<div class="error pad">{error}</div>{/if}
 
-  <div class="grid" bind:this={gridEl}>
-    <div class="map" bind:this={mapEl}></div>
-    <div class="col-resizer" onpointerdown={startColResize} title="Drag to resize"></div>
-    <div class="side" style="width:{rightW}px">
-      {#if cameras.length > 1}
-        <div class="cams">
-          {#each cameras as c}
-            <button class="ghost" class:active={c.id === cam} onclick={() => switchCam(c.id)}>{c.label}</button>
-          {/each}
+  <div class="panes">
+    {#each visiblePanes as p (p.id)}
+      <section
+        class="pane {p.w}"
+        class:over={overId === p.id && dragId && dragId !== p.id}
+        use:paneSize={p}
+        ondragover={(e) => { e.preventDefault(); overId = p.id; }}
+        ondragleave={() => { if (overId === p.id) overId = null; }}
+        ondrop={() => onDrop(p.id)}
+      >
+        <div
+          class="pane-head"
+          draggable="true"
+          ondragstart={(e) => onDragStart(p.id, e)}
+          ondragend={() => { dragId = null; overId = null; }}
+          title="Drag to move this pane"
+        >
+          <span class="grip">⠿</span>
+          <span class="pane-title">{PANE_TITLES[p.id]}</span>
+          <button class="wtoggle" title="Half / full width" onclick={() => toggleWidth(p.id)}>
+            {p.w === 'half' ? '⤢' : '⤡'}
+          </button>
         </div>
-      {/if}
-      <div class="video-wrap" bind:this={videoWrapEl} style="height:{videoH}px">
-        <video bind:this={videoEl} controls playsinline muted></video>
-        {#if overlayOk}
-          <DriveOverlay frames={modelFrames} rpy={modelRpy} {curT} calib={camCalib} fisheye={camCalib?.fisheye} {nw} {nh} />
-        {/if}
-        <audio bind:this={audioEl} style="display:none"></audio>
-        {#if tnow}
-          <div class="hud">
-            <div class="spd"><span class="n">{Math.round(tnow.speed)}</span><span class="u">mph</span></div>
-            <div class="chips">
-              <span class="chip">{tnow.gear?.toUpperCase() ?? '—'}</span>
-              {#if tnow.engaged}<span class="chip on">openpilot{tnow.lat === true && tnow.long === false ? ' · steer' : tnow.long === true && tnow.lat === false ? ' · cruise' : ''}</span>{/if}
-              {#if tnow.brake}<span class="chip brk">brake</span>{/if}
-              <span class="arrow" class:lit={tnow.lb}>◀</span>
-              <span class="arrow" class:lit={tnow.rb}>▶</span>
+
+        <div class="pane-body">
+          {#if p.id === 'video'}
+            {#if cameras.length > 1}
+              <div class="cams">
+                {#each cameras as c}
+                  <button class="ghost" class:active={c.id === cam} onclick={() => switchCam(c.id)}>{c.label}</button>
+                {/each}
+              </div>
+            {/if}
+            <div class="video-wrap">
+              <video bind:this={videoEl} controls playsinline muted></video>
+              {#if overlayOk}
+                <DriveOverlay frames={modelFrames} rpy={modelRpy} {curT} calib={camCalib} fisheye={camCalib?.fisheye} {nw} {nh} />
+              {/if}
+              <audio bind:this={audioEl} style="display:none"></audio>
+              {#if tnow}
+                <div class="hud">
+                  <div class="spd"><span class="n">{Math.round(tnow.speed)}</span><span class="u">mph</span></div>
+                  <div class="chips">
+                    <span class="chip">{tnow.gear?.toUpperCase() ?? '—'}</span>
+                    {#if tnow.engaged}<span class="chip on">openpilot{tnow.lat === true && tnow.long === false ? ' · steer' : tnow.long === true && tnow.lat === false ? ' · cruise' : ''}</span>{/if}
+                    {#if tnow.brake}<span class="chip brk">brake</span>{/if}
+                    <span class="arrow" class:lit={tnow.lb}>◀</span>
+                    <span class="arrow" class:lit={tnow.rb}>▶</span>
+                  </div>
+                </div>
+              {/if}
             </div>
-          </div>
-        {/if}
-      </div>
-      <div class="ctrl">
-        <span class="muted">t = {fmtT(curT)}</span>
-        {#if movieMode}<span class="moviebadge" title="Playing the stitched HD movie with muxed audio">▶ HD movie</span>{/if}
-        <button class="ghost rate" class:active={showModel} onclick={toggleModel} title="Top-down model view (needs full-res rlog)">Top-down</button>
-        <button class="ghost rate" class:active={showOverlay} onclick={toggleOverlay} title="Model overlay on the road video">Overlay</button>
-        {#if showOverlay && OVERLAY_CAMS.includes(cam)}
-          <button class="ghost rate" class:active={calibrating} onclick={() => (calibrating = !calibrating)}>Calibrate</button>
-        {/if}
-        <span class="rates">
-          {#each [0.5, 1, 1.5, 2, 4, 8] as r}
-            <button class="ghost rate" class:active={rate === r} onclick={() => setRate(r)}>{r}×</button>
-          {/each}
-        </span>
-      </div>
-      {#if showOverlay && !OVERLAY_CAMS.includes(cam)}
-        <div class="muted small pad">The overlay needs a road camera — switch to Road, Road HD, or Wide.</div>
-      {/if}
-      {#if calibrating && camCalib}
-        <div class="calib">
-          <div class="muted small">Calibrating <b>{camLabel}</b>{camCalib.fisheye ? ' · fisheye' : ''}</div>
-          {#each [['fx', camCalib.fisheye ? 'focal' : 'focal x', 100, 3000, 1], ...(camCalib.fisheye ? [] : [['fy', 'focal y', 100, 3000, 1]]), ['cx', 'center x', 0, nw, 1], ['cy', 'center y', 0, nh, 1], ['pitch', 'pitch', -0.2, 0.2, 0.001], ['yaw', 'yaw', -0.2, 0.2, 0.001], ['roll', 'roll', -0.2, 0.2, 0.001], ['h', 'cam height m', 0, 2.5, 0.01]] as [k, label, min, max, step]}
-            <label class="crow">
-              <span>{label}</span>
-              <input type="range" {min} {max} {step} bind:value={calib[cam][k]} />
-              <span class="cval">{(+calib[cam][k]).toFixed(k === 'pitch' || k === 'yaw' || k === 'roll' ? 3 : k === 'h' ? 2 : 0)}</span>
-            </label>
-          {/each}
-          <div class="cactions">
-            <button onclick={saveCalib}>Save calibration</button>
-            <button class="ghost" onclick={resetCalib}>Reset {camLabel}</button>
-            {#if calibMsg}<span class="muted small">{calibMsg}</span>{/if}
-          </div>
+            <div class="ctrl">
+              <span class="muted">t = {fmtT(curT)}</span>
+              {#if movieMode}<span class="moviebadge" title="Playing the stitched HD movie with muxed audio">▶ HD movie</span>{/if}
+              <button class="ghost rate" class:active={showModel} onclick={toggleModel} title="Top-down model view (needs full-res rlog)">Top-down</button>
+              <button class="ghost rate" class:active={showOverlay} onclick={toggleOverlay} title="Model overlay on the road video">Overlay</button>
+              {#if showOverlay && OVERLAY_CAMS.includes(cam)}
+                <button class="ghost rate" class:active={calibrating} onclick={() => (calibrating = !calibrating)}>Calibrate</button>
+              {/if}
+              <span class="rates">
+                {#each [0.5, 1, 1.5, 2, 4, 8] as r}
+                  <button class="ghost rate" class:active={rate === r} onclick={() => setRate(r)}>{r}×</button>
+                {/each}
+              </span>
+            </div>
+            {#if showOverlay && !OVERLAY_CAMS.includes(cam)}
+              <div class="muted small pad">The overlay needs a road camera — switch to Road, Road HD, or Wide.</div>
+            {/if}
+            {#if calibrating && camCalib}
+              <div class="calib">
+                <div class="muted small">Calibrating <b>{camLabel}</b>{camCalib.fisheye ? ' · fisheye' : ''}</div>
+                {#each [['fx', camCalib.fisheye ? 'focal' : 'focal x', 100, 3000, 1], ...(camCalib.fisheye ? [] : [['fy', 'focal y', 100, 3000, 1]]), ['cx', 'center x', 0, nw, 1], ['cy', 'center y', 0, nh, 1], ['pitch', 'pitch', -0.2, 0.2, 0.001], ['yaw', 'yaw', -0.2, 0.2, 0.001], ['roll', 'roll', -0.2, 0.2, 0.001], ['h', 'cam height m', 0, 2.5, 0.01]] as [k, label, min, max, step]}
+                  <label class="crow">
+                    <span>{label}</span>
+                    <input type="range" {min} {max} {step} bind:value={calib[cam][k]} />
+                    <span class="cval">{(+calib[cam][k]).toFixed(k === 'pitch' || k === 'yaw' || k === 'roll' ? 3 : k === 'h' ? 2 : 0)}</span>
+                  </label>
+                {/each}
+                <div class="cactions">
+                  <button onclick={saveCalib}>Save calibration</button>
+                  <button class="ghost" onclick={resetCalib}>Reset {camLabel}</button>
+                  {#if calibMsg}<span class="muted small">{calibMsg}</span>{/if}
+                </div>
+              </div>
+            {/if}
+          {:else if p.id === 'map'}
+            <div class="map" bind:this={mapEl}></div>
+          {:else if p.id === 'graph'}
+            <DriveGraph {telemetry} {curT} onseek={(t) => seek(t * 1000)} />
+          {:else if p.id === 'topdown'}
+            {#if modelLoading}
+              <div class="muted small pad">Loading model…</div>
+            {:else if modelFrames.length}
+              <DriveModel frames={modelFrames} {curT} />
+            {:else}
+              <div class="muted small pad">No model data — pull full-res (rlog) for this drive first.</div>
+            {/if}
+          {:else if p.id === 'events'}
+            <div class="events">
+              {#if !engageEvents.length}
+                <div class="muted small">No engagement events.</div>
+              {:else}
+                {#each engageEvents as e}
+                  <button class="ev" onclick={() => seek(e.t * 1000)}>
+                    <span class="badge" class:on={e.engaged}>{e.engaged ? 'engaged' : 'disengaged'}</span>
+                    {#if e.reason}<span class="reason r-{e.reason}">{reasonLabel(e.reason)}</span>{/if}
+                    <span class="muted small">{fmtT(e.t)}</span>
+                  </button>
+                {/each}
+              {/if}
+            </div>
+          {/if}
         </div>
-      {/if}
-      <DriveGraph {telemetry} {curT} onseek={(t) => seek(t * 1000)} />
-      {#if showModel}
-        {#if modelLoading}
-          <div class="muted small pad">Loading model…</div>
-        {:else if modelFrames.length}
-          <DriveModel frames={modelFrames} {curT} />
-        {:else}
-          <div class="muted small pad">No model data — pull full-res (rlog) for this drive first.</div>
-        {/if}
-      {/if}
-      <div class="row-resizer" onpointerdown={startRowResize} title="Drag to resize"></div>
-      <div class="events">
-        <div class="ev-head">Engagements</div>
-        {#if !engageEvents.length}
-          <div class="muted small">No engagement events.</div>
-        {:else}
-          {#each engageEvents as e}
-            <button class="ev" onclick={() => seek(e.t * 1000)}>
-              <span class="badge" class:on={e.engaged}>{e.engaged ? 'engaged' : 'disengaged'}</span>
-              {#if e.reason}<span class="reason r-{e.reason}">{reasonLabel(e.reason)}</span>{/if}
-              <span class="muted small">{fmtT(e.t)}</span>
-            </button>
-          {/each}
-        {/if}
-      </div>
-    </div>
+      </section>
+    {/each}
   </div>
 </div>
 
@@ -561,23 +630,28 @@
   .statstrip { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 8px 16px;
     border-bottom: 1px solid var(--border); font-size: 13px; color: var(--muted); }
   .statstrip .s b { color: var(--text); }
-  .grid { flex: 1; min-height: 0; display: flex; }
-  .map { flex: 1; min-width: 0; height: 100%; }
-  .col-resizer { width: 10px; flex: none; cursor: col-resize; background: var(--panel);
-    display: flex; align-items: center; justify-content: center; touch-action: none; }
-  .col-resizer::after { content: ''; width: 4px; height: 42px; border-radius: 3px;
-    background: var(--border); transition: background 0.1s; }
-  .col-resizer:hover::after, .col-resizer:active::after { background: var(--accent); }
-  .side { flex: none; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+  /* Movable panes: flow in order, half/full width, each resizable in height. */
+  .panes { flex: 1; min-height: 0; overflow: auto; display: flex; flex-wrap: wrap;
+    align-content: flex-start; gap: 8px; padding: 8px; }
+  .pane { display: flex; flex-direction: column; min-width: 0; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px; overflow: hidden; resize: vertical; }
+  .pane.half { width: calc(50% - 4px); }
+  .pane.full { width: 100%; }
+  .pane.over { outline: 2px dashed var(--accent); outline-offset: -2px; }
+  .pane-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; flex: none;
+    background: var(--panel-2); border-bottom: 1px solid var(--border); cursor: grab; user-select: none; }
+  .pane-head:active { cursor: grabbing; }
+  .grip { color: var(--muted); font-size: 14px; line-height: 1; }
+  .pane-title { font-size: 12px; font-weight: 600; color: var(--muted); flex: 1; }
+  .wtoggle { background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--muted);
+    cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 7px; }
+  .wtoggle:hover { border-color: var(--accent); color: var(--accent); }
+  .pane-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+  .map { flex: 1; min-height: 0; }
   .cams { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); flex: none; }
   .cams .active { border-color: var(--accent); color: var(--accent); }
-  .video-wrap { position: relative; flex: none; background: #000; }
+  .video-wrap { position: relative; flex: 1; min-height: 0; background: #000; }
   video { width: 100%; height: 100%; background: #000; object-fit: contain; display: block; }
-  .row-resizer { height: 10px; flex: none; cursor: row-resize; background: var(--panel);
-    display: flex; align-items: center; justify-content: center; touch-action: none; }
-  .row-resizer::after { content: ''; height: 4px; width: 42px; border-radius: 3px;
-    background: var(--border); transition: background 0.1s; }
-  .row-resizer:hover::after, .row-resizer:active::after { background: var(--accent); }
   .hud {
     position: absolute; top: 8px; left: 8px; right: 8px; display: flex;
     align-items: flex-start; justify-content: space-between; pointer-events: none;
@@ -599,7 +673,6 @@
   .rate.active { border-color: var(--accent); color: var(--accent); }
   .clock { padding: 6px 12px; border-bottom: 1px solid var(--border); }
   .events { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
-  .ev-head { font-weight: 600; margin: 4px 6px 8px; }
   .ev {
     display: flex; align-items: center; justify-content: space-between; width: 100%;
     background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
@@ -612,9 +685,6 @@
   .reason.r-steering { color: #d29922; border-color: #9e7615; }
   .small { font-size: 12px; }
   @media (max-width: 800px) {
-    .grid { flex-direction: column; }
-    .map { height: 40%; flex: none; }
-    .col-resizer { display: none; }
-    .side { width: 100% !important; border-left: 0; border-top: 1px solid var(--border); flex: 1; }
+    .pane.half { width: 100%; }
   }
 </style>
