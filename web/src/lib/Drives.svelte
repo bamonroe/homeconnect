@@ -10,6 +10,24 @@
   let error = $state('');
   let loading = $state(true);
   let showAdd = $state(false);
+  let syncing = $state(false);
+  let syncMsg = $state('');
+
+  async function syncNow() {
+    if (!dongle || syncing) return;
+    syncing = true;
+    syncMsg = '';
+    try {
+      const s = await api.sync(dongle);
+      syncMsg = s.online === false
+        ? 'Device is offline — it’ll sync when it reconnects.'
+        : 'Sync started — progress shows up top. New drives appear as they arrive.';
+    } catch (e) {
+      syncMsg = `Sync failed: ${e.message}`;
+    } finally {
+      syncing = false;
+    }
+  }
 
   async function onPaired() {
     showAdd = false;
@@ -78,8 +96,19 @@
         </button>
       {/each}
     </div>
-    <button onclick={() => (showAdd = true)}>+ Add device</button>
+    <div class="actions">
+      {#if dongle}
+        <button class="ghost" onclick={syncNow} disabled={syncing}>
+          {syncing ? 'Syncing…' : 'Sync now'}
+        </button>
+      {/if}
+      <button onclick={() => (showAdd = true)}>+ Add device</button>
+    </div>
   </div>
+
+  {#if syncMsg}
+    <p class="muted sync-msg">{syncMsg}</p>
+  {/if}
 
   {#if showAdd}
     <AddDevice onpaired={onPaired} onclose={() => (showAdd = false)} />
@@ -114,6 +143,8 @@
 <style>
   .page { padding: 18px; max-width: 920px; margin: 0 auto; }
   .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  .actions { display: flex; gap: 8px; flex: none; }
+  .sync-msg { margin: -6px 0 14px; }
   .devices { display: flex; gap: 8px; flex-wrap: wrap; }
   .devices .active { border-color: var(--accent); }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #6e7681; margin-left: 6px; }

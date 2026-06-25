@@ -14,6 +14,20 @@
   let pendingPair = new URLSearchParams(location.search).get('pair');
   let banner = $state('');
 
+  // Sync queue counter, polled while logged in.
+  let queue = $state({ drives: 0, files: 0 });
+  $effect(() => {
+    if (!token) return;
+    let stop = false;
+    const tick = async () => {
+      try { queue = await api.syncQueue(); } catch {}
+    };
+    tick();
+    // Poll faster while there's work, slower when idle.
+    const id = setInterval(() => { if (!stop) tick(); }, 3000);
+    return () => { stop = true; clearInterval(id); };
+  });
+
   $effect(() => {
     if (token && pendingPair) {
       const tok = pendingPair;
@@ -48,6 +62,12 @@
     <div class="brand">home<span>connect</span></div>
     {#if token}
       <div class="right">
+        {#if queue.files > 0}
+          <span class="syncing" title="Drives and files queued for syncing">
+            <span class="spin">⟳</span>
+            {queue.drives} drive{queue.drives === 1 ? '' : 's'} · {queue.files} file{queue.files === 1 ? '' : 's'}
+          </span>
+        {/if}
         {#if user?.is_admin}
           <button class="ghost" onclick={() => (view = view === 'settings' ? 'drives' : 'settings')}>
             {view === 'settings' ? 'Drives' : 'Settings'}
@@ -85,6 +105,10 @@
   .brand { font-weight: 700; font-size: 18px; }
   .brand span { color: var(--accent); }
   .right { display: flex; align-items: center; gap: 12px; }
+  .syncing { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--accent);
+    border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
+  .spin { display: inline-block; animation: spin 1.4s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   main { flex: 1; min-height: 0; overflow: auto; }
   .banner { background: var(--accent); color: #fff; padding: 8px 16px; font-size: 13px; }
 </style>

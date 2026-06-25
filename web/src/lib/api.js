@@ -93,6 +93,20 @@ export const api = {
   // admin: transcode device
   transcode: () => req('GET', '/v1/admin/transcode'),
   setTranscode: (device) => req('POST', '/v1/admin/transcode', { device }),
+  // admin: automatic-sync on/off toggle + loop interval
+  syncSettings: () => req('GET', '/v1/admin/sync'),
+  setSync: (patch) => req('POST', '/v1/admin/sync', patch),
+  // sync queue counter (drives + files queued/in-flight)
+  syncQueue: () => req('GET', '/v1/sync/queue'),
+  // device sync (SSH pull). opts: { full: bool, route: '<ts>', types: ['fcamera',…] }
+  sync: (dongle, { full = false, route, types } = {}) => {
+    const p = new URLSearchParams();
+    if (full) p.set('full', 'true');
+    if (route) p.set('route', route);
+    if (types && types.length) p.set('types', types.join(','));
+    const qs = p.toString();
+    return req('POST', `/v1/devices/${dongle}/sync${qs ? `?${qs}` : ''}`);
+  },
   // manage data
   downloadUrl: (fullname, types) =>
     `/v1/route/${encodeURIComponent(fullname)}/download?types=${types.join(',')}&sig=${getToken()}`,

@@ -8,6 +8,8 @@
 
   let { route, onback } = $props();
   let showManage = $state(false);
+  let pulling = $state(false);
+  let pullMsg = $state('');
 
   let mapEl;
   let videoEl;
@@ -231,6 +233,24 @@
     });
   }
 
+  // Pull this drive's data per the default sync settings (catches anything not
+  // yet synced for this route). Granular per-type pulls live in Manage data.
+  async function syncDrive() {
+    if (pulling) return;
+    pulling = true;
+    pullMsg = '';
+    try {
+      const s = await api.sync(dongle, { route: ts });
+      pullMsg = s.online === false
+        ? 'Device is offline — it’ll sync when it reconnects.'
+        : 'Sync queued — progress shows up top; reopen the drive once it lands.';
+    } catch (e) {
+      pullMsg = `Sync failed: ${e.message}`;
+    } finally {
+      pulling = false;
+    }
+  }
+
   function switchCam(id) {
     const at = videoEl?.currentTime || 0;
     cam = id;
@@ -294,8 +314,13 @@
     <button class="ghost" onclick={onback}>← Drives</button>
     <div class="title">{new Date(route.start_time_utc_millis).toLocaleString()}</div>
     <div class="muted">{route.length ? route.length.toFixed(1) + ' mi' : ''} · {route.platform || ''}</div>
+    <button class="ghost pullfull" onclick={syncDrive} disabled={pulling}>
+      {pulling ? 'Working…' : 'Sync'}
+    </button>
     <button class="ghost manage" onclick={() => (showManage = true)}>Manage data</button>
   </div>
+
+  {#if pullMsg}<div class="muted pad">{pullMsg}</div>{/if}
 
   {#if showManage}
     <ManageData
@@ -366,6 +391,7 @@
     border-bottom: 1px solid var(--border); background: var(--panel);
   }
   .bar .title { font-weight: 600; }
+  .bar .pullfull { margin-left: auto; }
   .bar .manage { margin-left: auto; }
   .pad { padding: 10px 16px; }
   .grid { flex: 1; min-height: 0; display: flex; }

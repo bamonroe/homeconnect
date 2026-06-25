@@ -8,14 +8,73 @@
   let msg = $state('');
   let busy = $state(false);
   let tc = $state(null); // { current, devices: [{value,label,encodes}] }
+  let sync = $state(null); // { enabled, interval_secs, types:[], all_types:[] }
+
+  const TYPE_LABELS = {
+    qcamera: 'Road (qcamera)',
+    fcamera: 'Road HD (fcamera)',
+    dcamera: 'Driver (dcamera)',
+    ecamera: 'Wide (ecamera)',
+    rlog: 'Raw log (rlog)',
+  };
 
   async function load() {
     error = '';
     try {
       cfg = await api.retention();
       tc = await api.transcode();
+      sync = await api.syncSettings();
     } catch (e) {
       error = e.message;
+    }
+  }
+
+  async function toggleSync(e) {
+    const on = e.currentTarget.checked;
+    busy = true; error = ''; msg = '';
+    try {
+      await api.setSync({ enabled: on });
+      sync.enabled = on;
+      msg = on ? 'Automatic sync turned on.' : 'Automatic sync turned off.';
+    } catch (err) {
+      error = err.message;
+      e.currentTarget.checked = !on; // revert on failure
+    } finally {
+      busy = false;
+    }
+  }
+
+  function onType(t, e) {
+    sync.types = e.currentTarget.checked
+      ? [...sync.types, t]
+      : sync.types.filter((x) => x !== t);
+  }
+
+  async function saveTypes() {
+    busy = true; error = ''; msg = '';
+    try {
+      const r = await api.setSync({ types: sync.types });
+      sync.types = r.types;
+      msg = 'Default sync data saved.';
+    } catch (err) {
+      error = err.message;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function saveInterval() {
+    busy = true; error = ''; msg = '';
+    try {
+      const r = await api.setSync({ interval_secs: Math.max(0, Number(sync.interval_secs) || 0) });
+      sync.interval_secs = r.interval_secs;
+      msg = r.interval_secs === 0
+        ? 'Periodic check off — sync now only runs when the device connects.'
+        : `Periodic check set to every ${r.interval_secs}s.`;
+    } catch (err) {
+      error = err.message;
+    } finally {
+      busy = false;
     }
   }
 
@@ -84,6 +143,46 @@
       </div>
     </div>
 
+    {#if sync}
+      <div class="card">
+        <h3>Automatic drive sync</h3>
+        <p class="muted small">
+          Pull new drives off the device over SSH automatically (when it connects, and every
+          minute while it's online). Turn off to stop automatic pulls — you can still use
+          <strong>Sync now</strong> and <strong>Pull full-res</strong> on demand.
+        </p>
+        <label class="toggle">
+          <input type="checkbox" checked={sync.enabled} disabled={busy} onchange={toggleSync} />
+          <span>{sync.enabled ? 'On' : 'Off'}</span>
+        </label>
+        <label>Re-check online device every (seconds) — 0 = only when it connects
+          <input type="number" min="0" step="10" bind:value={sync.interval_secs} disabled={busy} />
+        </label>
+        <div class="actions">
+          <button disabled={busy} onclick={saveInterval}>Save interval</button>
+        </div>
+
+        <h4>Data synced by default</h4>
+        <p class="muted small">
+          Which files automatic sync pulls. The driving log (telemetry, map, events) is always
+          synced; the cameras and raw log are large — leave the full-res ones off to save space
+          and pull them per drive on demand.
+        </p>
+        <div class="checks">
+          {#each sync.all_types as t}
+            <label class="toggle">
+              <input type="checkbox" checked={sync.types.includes(t)} disabled={busy}
+                onchange={(e) => onType(t, e)} />
+              <span>{TYPE_LABELS[t] ?? t}</span>
+            </label>
+          {/each}
+        </div>
+        <div class="actions">
+          <button disabled={busy} onclick={saveTypes}>Save default data</button>
+        </div>
+      </div>
+    {/if}
+
     {#if tc}
       <div class="card">
         <h3>Transcoding device</h3>
@@ -125,8 +224,12 @@
   .bar { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
   h2 { margin: 0; }
   h3 { margin: 0 0 10px; font-size: 14px; }
+  h4 { margin: 16px 0 6px; font-size: 13px; }
+  .checks { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
   label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+  label.toggle { flex-direction: row; align-items: center; gap: 10px; margin-bottom: 0; font-size: 14px; color: var(--text); }
+  label.toggle input { width: 18px; height: 18px; }
   .actions { display: flex; gap: 10px; margin-top: 6px; }
   .stat { font-size: 16px; }
   .small { font-size: 12px; }
