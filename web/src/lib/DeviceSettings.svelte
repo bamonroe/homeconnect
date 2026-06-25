@@ -53,6 +53,14 @@
 
   // A conditional setting is active only when its controlling param has an
   // enabling value (matches how sunnypilot greys these out).
+  let openHelp = $state({});
+  function toggleHelp(e, key) {
+    e.preventDefault();
+    e.stopPropagation();
+    openHelp[key] = !openHelp[key];
+    openHelp = { ...openHelp };
+  }
+
   function active(s) {
     if (!s.depends_on) return true;
     // Unset params read as '' — treat as '0' (off/default) for the condition.
@@ -98,33 +106,40 @@
         <h3>{g}</h3>
         {#each dp.specs.filter((s) => s.group === g) as s}
           {@const on = active(s)}
-          {#if s.kind === 'info'}
-            <div class="drow"><span>{s.label}</span><span class="muted">{dp.values[s.key] || '—'}</span></div>
-          {:else if s.kind === 'bool'}
-            <label class="drow" class:dim={!on}>
-              <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
-              <input type="checkbox" checked={dp.values[s.key] === '1'} disabled={busy || !dp.online || !on}
-                onchange={(e) => setParam(s.key, e.currentTarget.checked ? '1' : '0')} />
-            </label>
-          {:else if s.kind === 'enum'}
-            <label class="drow" class:dim={!on}>
-              <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
-              <select value={dp.values[s.key] ?? ''} disabled={busy || !dp.online || !on}
-                onchange={(e) => setParam(s.key, e.currentTarget.value)}>
-                {#each s.options as o}<option value={o.value}>{o.label}</option>{/each}
-              </select>
-            </label>
-          {:else if s.kind === 'int'}
-            <label class="drow" class:dim={!on}>
-              <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
-              <span class="num">
-                <input type="number" min={s.min} max={s.max} step={s.step || 1}
-                  value={dp.values[s.key] ?? ''} disabled={busy || !dp.online || !on}
-                  onchange={(e) => setParam(s.key, e.currentTarget.value)} />
-                {#if s.unit}<span class="muted small">{s.unit}</span>{/if}
-              </span>
-            </label>
-          {/if}
+          {@const lbl = `${s.label}`}
+          <div class="item">
+            {#if s.kind === 'info'}
+              <div class="drow">
+                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}</span>
+                <span class="muted">{dp.values[s.key] || '—'}</span>
+              </div>
+            {:else if s.kind === 'bool'}
+              <label class="drow" class:dim={!on}>
+                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}</span>
+                <input type="checkbox" checked={dp.values[s.key] === '1'} disabled={busy || !dp.online || !on}
+                  onchange={(e) => setParam(s.key, e.currentTarget.checked ? '1' : '0')} />
+              </label>
+            {:else if s.kind === 'enum'}
+              <label class="drow" class:dim={!on}>
+                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}</span>
+                <select value={dp.values[s.key] ?? ''} disabled={busy || !dp.online || !on}
+                  onchange={(e) => setParam(s.key, e.currentTarget.value)}>
+                  {#each s.options as o}<option value={o.value}>{o.label}</option>{/each}
+                </select>
+              </label>
+            {:else if s.kind === 'int'}
+              <label class="drow" class:dim={!on}>
+                <span class="lbl">{lbl}{#if s.help}<button class="help" type="button" onclick={(e) => toggleHelp(e, s.key)}>?</button>{/if}</span>
+                <span class="num">
+                  <input type="number" min={s.min} max={s.max} step={s.step || 1}
+                    value={dp.values[s.key] ?? ''} disabled={busy || !dp.online || !on}
+                    onchange={(e) => setParam(s.key, e.currentTarget.value)} />
+                  {#if s.unit}<span class="muted small">{s.unit}</span>{/if}
+                </span>
+              </label>
+            {/if}
+            {#if openHelp[s.key] && s.help}<div class="help-text muted small">{s.help}</div>{/if}
+          </div>
         {/each}
       </div>
     {/each}
@@ -143,10 +158,16 @@
   h3 { margin: 12px 0 4px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
   .small { font-size: 12px; }
   .ok { color: #3fb950; }
-  .drow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
-  .drow:last-child { border-bottom: none; }
+  .item { border-bottom: 1px solid var(--border); }
+  .item:last-child { border-bottom: none; }
+  .drow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; font-size: 14px; }
   .drow input, .drow select { width: auto; flex: none; }
+  .lbl { display: inline-flex; align-items: center; gap: 8px; }
   .dim { opacity: 0.4; }
+  .help { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--border); background: transparent;
+    color: var(--muted); font-size: 11px; line-height: 1; cursor: pointer; flex: none; padding: 0; }
+  .help:hover { color: var(--text); border-color: var(--accent); }
+  .help-text { padding: 0 0 12px; max-width: 90%; line-height: 1.5; }
   .num { display: inline-flex; align-items: center; gap: 6px; }
   .num input { width: 80px; text-align: right; }
 </style>
