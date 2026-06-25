@@ -33,6 +33,10 @@ fn specs_json() -> Vec<Value> {
                 "kind": s.kind.as_str(),
                 "help": s.help,
                 "options": s.options.iter().map(|(v, l)| json!({"value": v, "label": l})).collect::<Vec<_>>(),
+                "min": s.min,
+                "max": s.max,
+                "step": s.step,
+                "unit": s.unit,
             })
         })
         .collect()

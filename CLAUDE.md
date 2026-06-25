@@ -235,7 +235,11 @@ and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
   0600 files in `/data/params/d`; writes use openpilot's atomic temp-file +
   `flock`'d rename. Only allowlisted keys with valid values are writable
   (`is_writable`); read-only `Info` keys (DongleId, GitBranch) are display-only.
-  Add a setting = one `Spec` in `device_params::SPECS`.
+  Specs are `Bool`/`Int`(min,max,step)/`Enum`(options)/`Info`, grouped, mirroring
+  sunnypilot's `selfdrive/ui/sunnypilot/layouts/settings/`. **Caveat:** some
+  sunnypilot sliders store a `value_map`'d value, not the slider index — model
+  those as `Enum`s of the exact valid values (e.g. MaxTimeOffroad, OnroadScreenOffTimer).
+  Add a setting = one `Spec` in `device_params::SPECS` (use `b`/`e`/`int_`/`info`).
 - Deferred: delete-on-device.
 - **EV telemetry (SoC/power): not recoverable** from these logs — investigated and
   parked. openpilot logs the camera/ADAS CAN bus; the BMS/HV traffic is on the

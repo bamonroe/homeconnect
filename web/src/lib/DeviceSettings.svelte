@@ -104,6 +104,16 @@
                 {#each s.options as o}<option value={o.value}>{o.label}</option>{/each}
               </select>
             </label>
+          {:else if s.kind === 'int'}
+            <label class="drow">
+              <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
+              <span class="num">
+                <input type="number" min={s.min} max={s.max} step={s.step || 1}
+                  value={dp.values[s.key] ?? ''} disabled={busy || !dp.online}
+                  onchange={(e) => setParam(s.key, e.currentTarget.value)} />
+                {#if s.unit}<span class="muted small">{s.unit}</span>{/if}
+              </span>
+            </label>
           {/if}
         {/each}
       </div>
@@ -126,4 +136,6 @@
   .drow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
   .drow:last-child { border-bottom: none; }
   .drow input, .drow select { width: auto; flex: none; }
+  .num { display: inline-flex; align-items: center; gap: 6px; }
+  .num input { width: 80px; text-align: right; }
 </style>
