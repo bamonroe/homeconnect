@@ -86,7 +86,8 @@ macros).
 | `api/devsync.rs` | `POST /v1/devices/{d}/sync` — manual SSH-pull trigger (`?full=&route=`) |
 | `device_ssh.rs` | homeconnect's device-scoped ed25519 keypair; `run` (command) + `pull_file` (scp) over key-only SSH to `comma@<last_addr>` |
 | `device_params.rs` | curated allowlist of openpilot params; read/validated-write over SSH (`is_writable`); local write-through cache (`device_params` table): edits are instant + offline, flushed on connect |
-| `api/device_params.rs` | `GET/POST /v1/devices/{d}/params` — read/set the allowlisted device settings (owner/admin) |
+| `api/device_params.rs` | `GET/POST /v1/devices/{d}/params` — read/set allowlisted device settings; `GET/POST /v1/devices/{d}/model` — read/switch the sunnypilot driving model (owner/admin) |
+| `model_select.rs` | sunnypilot driving-model selection over SSH: read `ModelManager_ActiveBundle` (current) + `ModelManager_ModelsCache` (catalog; snake_case) live; switch by writing the bundle index to `ModelManager_DownloadIndex` (device downloads+activates); revert = remove ActiveBundle. Online-only |
 | `devsync.rs` | SSH-pull: `trigger` (on device connect) + optional periodic `spawn`; list `/data/media/0/realdata`, diff vs DB registration, pull/parse missing (qlog+qcamera default; full-res on demand) → `ingest::{ingest,register}_segment_file` |
 | `web/` | Svelte 5 + Vite SPA: Login, Drives (Sync now), Drive (HUD overlay, movable panes — drag a pane's header to swap, resize from the corner, half/full toggle, layout saved to `hc_drive_panes`; camera switch, speed, synced audio, Pull full-res), AddDevice, ManageData, Settings, Stats, Queues (encoding + sync queues; header badges link here) |
 

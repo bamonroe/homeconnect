@@ -108,6 +108,9 @@ export const api = {
   // device settings (openpilot params over SSH)
   deviceParams: (dongle) => req('GET', `/v1/devices/${dongle}/params`),
   setDeviceParam: (dongle, key, value) => req('POST', `/v1/devices/${dongle}/params`, { key, value }),
+  // driving-model selection (sunnypilot). index < 0 = revert to default model.
+  deviceModel: (dongle) => req('GET', `/v1/devices/${dongle}/model`),
+  setDeviceModel: (dongle, index) => req('POST', `/v1/devices/${dongle}/model`, { index }),
   // admin: automatic-sync on/off toggle + loop interval
   syncSettings: () => req('GET', '/v1/admin/sync'),
   setSync: (patch) => req('POST', '/v1/admin/sync', patch),

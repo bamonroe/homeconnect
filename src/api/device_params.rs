@@ -113,3 +113,46 @@ pub async fn set_param(
     }
     Ok(Json(json!({ "ok": true, "key": req.key, "value": req.value, "online": online })))
 }
+
+/// GET /v1/devices/:dongle/model — the active driving model + selectable catalog.
+/// Read live over SSH (no cache; the catalog is large and device-specific), so it
+/// needs the device online.
+pub async fn get_model(
+    State(state): State<AppState>,
+    Path(dongle): Path<String>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    let device = authorize_device(&state, &user, &dongle).await?;
+    if device.online == 0 || device.last_addr.is_empty() {
+        return Ok(Json(json!({ "online": false })));
+    }
+    let model = crate::model_select::get_models(&state, &device.last_addr).await?;
+    Ok(Json(json!({ "online": true, "model": model })))
+}
+
+#[derive(Deserialize)]
+pub struct SetModel {
+    /// Catalog index to switch to, or a negative value to revert to the default model.
+    pub index: i64,
+}
+
+/// POST /v1/devices/:dongle/model — switch the driving model (or reset to default).
+/// Device must be online; the switch downloads in the background on the device.
+pub async fn set_model(
+    State(state): State<AppState>,
+    Path(dongle): Path<String>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<SetModel>,
+) -> AppResult<Json<Value>> {
+    let device = authorize_device(&state, &user, &dongle).await?;
+    if device.online == 0 || device.last_addr.is_empty() {
+        return Err(AppError::BadRequest("device must be online to change the model".into()));
+    }
+    if req.index < 0 {
+        crate::model_select::use_default(&state, &device.last_addr).await?;
+    } else {
+        crate::model_select::select(&state, &device.last_addr, req.index).await?;
+    }
+    tracing::info!(user = %user.username, %dongle, index = req.index, "device model change requested");
+    Ok(Json(json!({ "ok": true })))
+}

@@ -22,6 +22,49 @@
 
   async function loadParams() {
     dp = await api.deviceParams(dev);
+    loadModel();
+  }
+
+  // Driving-model selection (sunnypilot). Read live over SSH, so it needs the
+  // device online; switching downloads on the device + applies after a reboot.
+  let model = $state(null); // { online, model: { current, available, downloading } }
+  let modelSel = $state('');
+  let modelBusy = $state(false);
+  let modelMsg = $state('');
+  let modelFolders = $derived.by(() => {
+    const av = model?.model?.available ?? [];
+    const map = new Map();
+    for (const b of av) {
+      const f = b.folder || '';
+      if (!map.has(f)) map.set(f, []);
+      map.get(f).push(b);
+    }
+    return [...map.entries()].map(([name, bundles]) => ({ name, bundles }));
+  });
+  async function loadModel() {
+    modelSel = ''; modelMsg = '';
+    try { model = await api.deviceModel(dev); } catch { model = null; }
+  }
+  async function switchModel() {
+    if (modelSel === '') return;
+    const idx = Number(modelSel);
+    const name = model.model.available.find((b) => b.index === idx)?.name ?? `#${idx}`;
+    if (!confirm(`Switch the driving model to:\n\n${name}\n\nIt downloads on the device in the background and takes effect after a reboot. A cross-generation switch may need a calibration reset. Continue?`)) return;
+    modelBusy = true; modelMsg = '';
+    try {
+      await api.setDeviceModel(dev, idx);
+      modelMsg = 'Switch queued — the device is downloading it. Reboot to apply.';
+      setTimeout(loadModel, 1500);
+    } catch (e) { modelMsg = e.message; } finally { modelBusy = false; }
+  }
+  async function useDefaultModel() {
+    if (!confirm('Revert to the built-in default driving model?\n\nTakes effect after a reboot.')) return;
+    modelBusy = true; modelMsg = '';
+    try {
+      await api.setDeviceModel(dev, -1);
+      modelMsg = 'Reverted to the default model. Reboot to apply.';
+      setTimeout(loadModel, 1500);
+    } catch (e) { modelMsg = e.message; } finally { modelBusy = false; }
   }
 
   async function pickDevice(d) {
@@ -113,6 +156,41 @@
       </p>
     {/if}
 
+    {#if model}
+      <div class="card">
+        <h3>Driving model</h3>
+        {#if !model.online}
+          <p class="muted small">Connect the device to view or change the driving model.</p>
+        {:else}
+          <p class="muted small">
+            Current: <b>{model.model.current ? model.model.current.name : 'Default model'}</b>
+            {#if model.model.downloading != null}· <span class="dl">downloading a new model…</span>{/if}
+          </p>
+          <div class="modelrow">
+            <select bind:value={modelSel} disabled={modelBusy}>
+              <option value="">Select a model…</option>
+              {#each modelFolders as f}
+                {#if f.name}
+                  <optgroup label={f.name}>
+                    {#each f.bundles as b}<option value={b.index}>{b.name}</option>{/each}
+                  </optgroup>
+                {:else}
+                  {#each f.bundles as b}<option value={b.index}>{b.name}</option>{/each}
+                {/if}
+              {/each}
+            </select>
+            <button disabled={modelBusy || modelSel === ''} onclick={switchModel}>Switch</button>
+            <button class="ghost" disabled={modelBusy} onclick={useDefaultModel}>Use default</button>
+          </div>
+          <p class="muted small">
+            Switching downloads on the device in the background and applies after a reboot;
+            a cross-generation change may need a calibration reset.
+          </p>
+          {#if modelMsg}<p class="ok small">{modelMsg}</p>{/if}
+        {/if}
+      </div>
+    {/if}
+
     {#each groups as g}
       <div class="card">
         <h3>{g}</h3>
@@ -169,6 +247,10 @@
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 4px 16px; margin-bottom: 14px; }
   h3 { margin: 12px 0 4px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
   .small { font-size: 12px; }
+  .ok { color: #3fb950; }
+  .modelrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
+  .modelrow select { flex: 1; min-width: 200px; }
+  .dl { color: var(--accent); }
   .item { border-bottom: 1px solid var(--border); }
   .item:last-child { border-bottom: none; }
   .drow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; font-size: 14px; }
