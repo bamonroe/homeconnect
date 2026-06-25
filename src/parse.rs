@@ -49,7 +49,9 @@ struct Telem {
     gas: bool,    // gas pressed
     steer: f32,    // steering angle (deg)
     steer_override: bool, // driver is overriding the wheel (CarState.steeringPressed)
-    engaged: bool, // openpilot actively engaged (SelfdriveState.enabled)
+    engaged: bool, // openpilot controlling — lateral OR longitudinal (see lat/long)
+    lat: bool,     // lateral (steering) active — sunnypilot MADS active
+    long: bool,    // longitudinal (gas/brake) active — SelfdriveState.enabled
     cruise: bool,  // car cruise control on (cruiseState.enabled)
     soc: f32,      // state of charge / fuel level, percent (fuelGauge * 100)
     charging: bool,
@@ -204,7 +206,9 @@ struct Accum {
     device_type: String,
     has_can: bool,
     has_gps: bool,
-    cur_engaged: bool,    // latest openpilot-engaged state (for telemetry samples)
+    cur_engaged: bool,    // latest longitudinal engagement (SelfdriveState.enabled)
+    cur_lat: bool,        // latest lateral engagement (MADS active, selfdriveStateSP)
+    cur_alert: i32,       // latest alert status (0 normal, 1 prompt, 2 critical)
     seen_selfdrive: bool, // have we read engagement state yet this segment?
     // Device health (from DeviceState).
     max_temp: f32,
@@ -376,6 +380,7 @@ pub fn inspect_qlog(file: &str, raw: &[u8]) -> Vec<(String, usize)> {
             Ok(event::Which::LiveCalibration(_)) => "liveCalibration",
             Ok(event::Which::CarState(_)) => "carState",
             Ok(event::Which::SelfdriveState(_)) => "selfdriveState",
+            Ok(event::Which::SelfdriveStateSP(_)) => "selfdriveStateSP",
             Ok(event::Which::GpsLocationExternal(_)) | Ok(event::Which::GpsLocation(_)) => "gpsLocation",
             Ok(event::Which::Thumbnail(_)) => "thumbnail",
             Ok(_) => "other",
@@ -488,6 +493,38 @@ pub async fn parse_and_store(
     Ok(())
 }
 
+/// Emit a "state" timeline event when the combined engagement (lateral OR
+/// longitudinal) or the alert level changes, closing the prior event's interval.
+/// Called from both the SelfdriveState (longitudinal) and SelfdriveStateSP (MADS
+/// lateral) handlers so either transition is captured.
+fn emit_state_change(acc: &mut Accum, t: f64, mono: u64) {
+    let engaged = acc.cur_engaged || acc.cur_lat;
+    let cur = (engaged, acc.cur_alert);
+    if acc.last_state == Some(cur) {
+        return;
+    }
+    let route_offset_millis = (t * 1000.0) as i64;
+    // Close the previous event's interval.
+    if let Some(prev) = acc.events.last_mut() {
+        if let Some(obj) = prev.data.as_object_mut() {
+            obj.insert("end_route_offset_millis".into(), json!(route_offset_millis));
+        }
+    }
+    acc.events.push(DriveEvent {
+        kind: "state".into(),
+        time: mono,
+        route_offset_millis,
+        data: json!({
+            "state": if engaged { "enabled" } else { "disabled" },
+            "enabled": engaged,
+            "lat": acc.cur_lat,
+            "long": acc.cur_engaged,
+            "alertStatus": acc.cur_alert,
+        }),
+    });
+    acc.last_state = Some(cur);
+}
+
 fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
     use event::Which::*;
     // Route-relative time: the first event (initData) carries the route-start
@@ -556,8 +593,7 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
             }
         }
         SelfdriveState(Ok(ss)) => {
-            let enabled = ss.get_enabled();
-            acc.cur_engaged = enabled; // live state for the telemetry overlay
+            acc.cur_engaged = ss.get_enabled(); // longitudinal/main engagement
             acc.seen_selfdrive = true;
             let engageable = ss.get_engageable();
             let mut alert_status = match ss.get_alert_status() {
@@ -571,26 +607,17 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
                     alert_status = alert_status.max(1);
                 }
             }
-            let cur = (enabled, alert_status);
-            if acc.last_state != Some(cur) {
-                let route_offset_millis = (t * 1000.0) as i64;
-                // Close the previous event's interval.
-                if let Some(prev) = acc.events.last_mut() {
-                    if let Some(obj) = prev.data.as_object_mut() {
-                        obj.insert("end_route_offset_millis".into(), json!(route_offset_millis));
-                    }
-                }
-                acc.events.push(DriveEvent {
-                    kind: "state".into(),
-                    time: mono,
-                    route_offset_millis,
-                    data: json!({
-                        "state": if enabled { "enabled" } else { "disabled" },
-                        "enabled": enabled,
-                        "alertStatus": alert_status,
-                    }),
-                });
-                acc.last_state = Some(cur);
+            acc.cur_alert = alert_status;
+            emit_state_change(acc, t, mono);
+        }
+        // sunnypilot MADS: lateral (steering) assist, independent of longitudinal.
+        // This is why a steering-only assist must not be read off SelfdriveState
+        // alone — `mads.active` is the lateral truth.
+        SelfdriveStateSP(Ok(sp)) => {
+            if let Ok(mads) = sp.get_mads() {
+                acc.cur_lat = mads.get_active();
+                acc.seen_selfdrive = true;
+                emit_state_change(acc, t, mono);
             }
         }
         CarState(Ok(cs)) => {
@@ -611,7 +638,9 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
                     gas: cs.get_gas_pressed(),
                     steer: cs.get_steering_angle_deg(),
                     steer_override: cs.get_steering_pressed(),
-                    engaged: acc.cur_engaged,
+                    engaged: acc.cur_engaged || acc.cur_lat,
+                    lat: acc.cur_lat,
+                    long: acc.cur_engaged,
                     cruise,
                     soc: cs.get_fuel_gauge() * 100.0,
                     charging: cs.get_charging(),

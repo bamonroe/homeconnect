@@ -163,10 +163,19 @@ macros).
   seek + audio, no hack) when ready and falls back to HLS otherwise. Movies build
   only when a camera fully covers the drive (no mid-drive gaps), so the continuous
   movie timeline lines up with the route-relative model/telemetry `t`.
-- **Engagement** = `SelfdriveState.enabled` (NOT `cruiseState.enabled`, the car's
-  stock cruise, which is always off on openpilot-longitudinal cars). The UI derives
-  engage/disengage events from the continuous telemetry `engaged` field (strictly
-  alternating); telemetry emission is gated until the first `SelfdriveState` of a
+- **Engagement is two independent axes on sunnypilot (MADS).** Lateral (steering)
+  runs independently of longitudinal (gas/brake), so reading only one misses the
+  other — a steering-only assist shows nothing if you key on longitudinal alone.
+  - **Longitudinal** = `SelfdriveState.enabled` (NOT `cruiseState.enabled`, the
+    car's stock cruise, always off on openpilot-longitudinal cars) → Telem `long`.
+  - **Lateral** = `selfdriveStateSP.mads.active` (sunnypilot MADS, in `custom.capnp`;
+    the SP event is in the qlog at the same rate as `selfdriveState`) → Telem `lat`.
+  - Telem `engaged` = `lat || long` (any openpilot control); the HUD chip shows
+    "openpilot", "· steer" (lateral only) or "· cruise" (longitudinal only), and
+    trip stats (engaged_meters/seconds, disengage count) count either.
+  `emit_state_change` is called from BOTH the `SelfdriveState` and
+  `SelfdriveStateSP` handlers so a lateral-only engage/disengage still emits a
+  timeline event. Telemetry emission is gated until the first state event of a
   segment so there's no boundary flicker.
 - **VAAPI**: prod compose passes `/dev/dri` + `group_add` (host `render` gid); the
   image ships mesa + intel VAAPI drivers. Device is runtime-selectable (settings
