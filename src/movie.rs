@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::process::Command;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, Notify, Semaphore};
 
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -27,9 +27,18 @@ use crate::transcode;
 /// the sync counter. `pending` is how many movies the current sweep still has to
 /// build (it decrements as each finishes); `current` is a label for the one
 /// encoding right now. Idle ⇒ pending 0, current None.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct MovieQueue {
     inner: Arc<Mutex<MovieQ>>,
+    /// Pinged to wake the builder for an immediate sweep (e.g. a sync just
+    /// finished pulling a drive), instead of waiting for the next interval tick.
+    wake: Arc<Notify>,
+}
+
+impl Default for MovieQueue {
+    fn default() -> Self {
+        Self { inner: Arc::new(Mutex::new(MovieQ::default())), wake: Arc::new(Notify::new()) }
+    }
 }
 
 #[derive(Default)]
@@ -39,6 +48,19 @@ struct MovieQ {
 }
 
 impl MovieQueue {
+    /// Request an immediate sweep (coalesced — many requests collapse to one wake).
+    pub fn request_sweep(&self) {
+        self.wake.notify_one();
+    }
+
+    /// Sleep up to `secs`, returning early if a sweep was requested meanwhile.
+    async fn wait_or_request(&self, secs: u64) {
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(secs)) => {}
+            _ = self.wake.notified() => {}
+        }
+    }
+
     async fn set_pending(&self, n: usize) {
         self.inner.lock().await.pending = n;
     }
@@ -525,8 +547,10 @@ pub fn spawn(state: AppState) {
                 continue;
             }
             sweep(&state).await;
+            // Wait the interval, but wake immediately if a sync just drained the
+            // pull queue (a freshly-synced drive shouldn't wait a full interval).
             let secs = get_interval(&state).await.max(MIN_INTERVAL_SECS);
-            tokio::time::sleep(Duration::from_secs(secs)).await;
+            state.movie_queue.wait_or_request(secs).await;
         }
     });
 }

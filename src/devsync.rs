@@ -246,6 +246,12 @@ pub fn spawn_workers(state: AppState) {
                 let key = item.key.clone();
                 process_item(&state, item).await;
                 state.sync_queue.done(&key).await;
+                // If that drained the queue, a drive just finished syncing — kick
+                // the movie builder now instead of waiting for its next interval.
+                let (_, files) = state.sync_queue.stats().await;
+                if files == 0 {
+                    state.movie_queue.request_sweep();
+                }
             }
         });
     }
