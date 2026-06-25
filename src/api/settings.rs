@@ -114,6 +114,42 @@ pub async fn set_sync(
     })))
 }
 
+/// GET /v1/admin/cam-calib — saved road-camera calibration for the model overlay
+/// (effective qcamera intrinsics + small rpy offsets). Defaults if unset.
+pub async fn get_cam_calib(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'cam_calib'")
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+    // qcamera (526x330) is a uniform downscale of the 1928x1208 sensor (focal 2648).
+    let defaults = json!({ "fx": 722.4, "fy": 722.4, "cx": 263.0, "cy": 165.0, "pitch": 0.0, "yaw": 0.0, "roll": 0.0 });
+    let calib = v.and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(defaults);
+    Ok(Json(calib))
+}
+
+/// POST /v1/admin/cam-calib — save the calibration (stored verbatim as JSON).
+pub async fn set_cam_calib(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(body): Json<Value>,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    let s = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES ('cam_calib', ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(s)
+    .execute(&state.pool)
+    .await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// GET /v1/admin/transcode — current device + the selectable list.
 pub async fn get_transcode(
     State(state): State<AppState>,

@@ -7,6 +7,7 @@
   import ManageData from './ManageData.svelte';
   import DriveGraph from './DriveGraph.svelte';
   import DriveModel from './DriveModel.svelte';
+  import DriveOverlay from './DriveOverlay.svelte';
 
   let { route, onback } = $props();
   let showManage = $state(false);
@@ -140,6 +141,7 @@
   // Top-down model view (modelV2 from the rlog) — lazy-loaded on first toggle.
   let showModel = $state(false);
   let modelFrames = $state([]);
+  let modelRpy = $state([0, 0, 0]);
   let modelLoading = $state(false);
   let modelTried = false;
   async function loadModel() {
@@ -149,11 +151,29 @@
     const nums = route.segment_numbers?.length ? route.segment_numbers : [0];
     const chunks = await Promise.all(nums.map((n) => fetchJson(seg(n, 'model.json'))));
     modelFrames = chunks.filter(Boolean).flatMap((c) => c.frames || []);
+    modelRpy = chunks.find(Boolean)?.rpy || [0, 0, 0];
     modelLoading = false;
   }
   function toggleModel() {
     showModel = !showModel;
     if (showModel) loadModel();
+  }
+
+  // On-video model overlay + its calibration.
+  let showOverlay = $state(false);
+  let calibrating = $state(false);
+  let calib = $state(null);
+  let calibMsg = $state('');
+  async function toggleOverlay() {
+    showOverlay = !showOverlay;
+    if (showOverlay) {
+      loadModel();
+      if (!calib) { try { calib = await api.camCalib(); } catch {} }
+    }
+  }
+  async function saveCalib() {
+    try { await api.setCamCalib(calib); calibMsg = 'Calibration saved.'; setTimeout(() => (calibMsg = ''), 2500); }
+    catch (e) { calibMsg = e.message; }
   }
 
   // Telemetry sample nearest the current playback time (binary search).
@@ -392,6 +412,9 @@
       {/if}
       <div class="video-wrap" bind:this={videoWrapEl} style="height:{videoH}px">
         <video bind:this={videoEl} controls playsinline muted></video>
+        {#if showOverlay && cam === 'qcamera' && modelFrames.length}
+          <DriveOverlay frames={modelFrames} rpy={modelRpy} {curT} {calib} />
+        {/if}
         <audio bind:this={audioEl} style="display:none"></audio>
         {#if tnow}
           <div class="hud">
@@ -409,12 +432,34 @@
       <div class="ctrl">
         <span class="muted">t = {fmtT(curT)}</span>
         <button class="ghost rate" class:active={showModel} onclick={toggleModel} title="Top-down model view (needs full-res rlog)">Top-down</button>
+        <button class="ghost rate" class:active={showOverlay} onclick={toggleOverlay} title="Model overlay on the road video (Road cam)">Overlay</button>
+        {#if showOverlay && cam === 'qcamera'}
+          <button class="ghost rate" class:active={calibrating} onclick={() => (calibrating = !calibrating)}>Calibrate</button>
+        {/if}
         <span class="rates">
           {#each [0.5, 1, 1.5, 2, 4, 8] as r}
             <button class="ghost rate" class:active={rate === r} onclick={() => setRate(r)}>{r}×</button>
           {/each}
         </span>
       </div>
+      {#if showOverlay && cam !== 'qcamera'}
+        <div class="muted small pad">The overlay is calibrated for the Road (qcamera) view — switch to Road.</div>
+      {/if}
+      {#if calibrating && calib}
+        <div class="calib">
+          {#each [['fx', 'focal x', 300, 1400, 1], ['fy', 'focal y', 300, 1400, 1], ['cx', 'center x', 0, 526, 1], ['cy', 'center y', 0, 330, 1], ['pitch', 'pitch', -0.15, 0.15, 0.001], ['yaw', 'yaw', -0.15, 0.15, 0.001]] as [k, label, min, max, step]}
+            <label class="crow">
+              <span>{label}</span>
+              <input type="range" {min} {max} {step} bind:value={calib[k]} />
+              <span class="cval">{(+calib[k]).toFixed(k === 'pitch' || k === 'yaw' ? 3 : 0)}</span>
+            </label>
+          {/each}
+          <div class="cactions">
+            <button onclick={saveCalib}>Save calibration</button>
+            {#if calibMsg}<span class="muted small">{calibMsg}</span>{/if}
+          </div>
+        </div>
+      {/if}
       <DriveGraph {telemetry} {curT} onseek={(t) => seek(t * 1000)} />
       {#if showModel}
         {#if modelLoading}
@@ -454,6 +499,11 @@
   .bar .pullfull { margin-left: auto; }
   .bar .manage { margin-left: auto; }
   .pad { padding: 10px 16px; }
+  .calib { padding: 8px 16px; display: grid; gap: 6px; border-bottom: 1px solid var(--border); }
+  .crow { display: grid; grid-template-columns: 70px 1fr 46px; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+  .crow input { width: 100%; }
+  .crow .cval { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+  .cactions { display: flex; gap: 10px; align-items: center; margin-top: 4px; }
   .statstrip { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 8px 16px;
     border-bottom: 1px solid var(--border); font-size: 13px; color: var(--muted); }
   .statstrip .s b { color: var(--text); }

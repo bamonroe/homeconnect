@@ -223,6 +223,7 @@ struct Accum {
 struct ModelXY {
     x: Vec<f32>,
     y: Vec<f32>,
+    z: Vec<f32>,
 }
 #[derive(serde::Serialize)]
 struct ModelLead {
@@ -240,6 +241,9 @@ struct ModelFrame {
 }
 #[derive(serde::Serialize)]
 struct ModelArtifact {
+    /// liveCalibration rpyCalib (roll, pitch, yaw) for this segment — the camera
+    /// mount orientation, applied when projecting onto the road video.
+    rpy: [f32; 3],
     frames: Vec<ModelFrame>,
 }
 
@@ -250,32 +254,43 @@ fn flist(r: ::capnp::Result<::capnp::primitive_list::Reader<'_, f32>>, step: usi
     }
 }
 fn xy(d: crate::cereal::log_capnp::x_y_z_t_data::Reader<'_>, step: usize) -> ModelXY {
-    ModelXY { x: flist(d.get_x(), step), y: flist(d.get_y(), step) }
+    ModelXY { x: flist(d.get_x(), step), y: flist(d.get_y(), step), z: flist(d.get_z(), step) }
 }
 
-/// Extract a downsampled top-down model series from an rlog (path, lane lines,
-/// road edges, lead). Frames thinned to ~5 Hz, points to ~1/3, to keep it light.
-pub fn extract_model(file: &str, raw: &[u8]) -> Vec<ModelFrame> {
+/// Extract a downsampled model series from an rlog (path, lane lines, road edges,
+/// lead — with z, in the device frame) + the segment's calibration. Frames thinned
+/// to ~5 Hz, points to ~1/3, to keep it light.
+pub fn extract_model(file: &str, raw: &[u8]) -> ModelArtifact {
     use crate::cereal::log_capnp::event;
     const FRAME_STEP: usize = 4; // 20 Hz → ~5 Hz
     const PT_STEP: usize = 3;
-    let Ok(data) = decompress(file, raw) else { return Vec::new() };
+    let empty = ModelArtifact { rpy: [0.0; 3], frames: Vec::new() };
+    let Ok(data) = decompress(file, raw) else { return empty };
     let opts = ReaderOptions { traversal_limit_in_words: Some(usize::MAX), nesting_limit: 128 };
     let mut cursor = std::io::Cursor::new(&data[..]);
     let mut base: Option<u64> = None;
     let mut frames = Vec::new();
+    let mut rpy = [0.0f32; 3];
     let mut idx = 0usize;
     while let Ok(reader) = serialize::read_message(&mut cursor, opts) {
         let Ok(ev) = reader.get_root::<event::Reader>() else { continue };
         let mono = ev.get_log_mono_time();
         let b = *base.get_or_insert(mono);
+        if let Ok(event::Which::LiveCalibration(Ok(lc))) = ev.which() {
+            if let Ok(r) = lc.get_rpy_calib() {
+                if r.len() >= 3 {
+                    rpy = [r.get(0), r.get(1), r.get(2)];
+                }
+            }
+            continue;
+        }
         let Ok(event::Which::ModelV2(Ok(m))) = ev.which() else { continue };
         idx += 1;
         if idx % FRAME_STEP != 0 {
             continue;
         }
         let t = mono.saturating_sub(b) as f64 / 1_000_000_000.0;
-        let path = m.get_position().map(|p| xy(p, PT_STEP)).unwrap_or(ModelXY { x: vec![], y: vec![] });
+        let path = m.get_position().map(|p| xy(p, PT_STEP)).unwrap_or(ModelXY { x: vec![], y: vec![], z: vec![] });
         let mut lanes = Vec::new();
         if let Ok(lls) = m.get_lane_lines() {
             let probs = m.get_lane_line_probs().ok();
@@ -314,10 +329,10 @@ pub fn extract_model(file: &str, raw: &[u8]) -> Vec<ModelFrame> {
         });
         frames.push(ModelFrame { t, path, lanes, edges, lead });
     }
-    frames
+    ModelArtifact { rpy, frames }
 }
 
-/// Parse an rlog's modelV2 into a `model.json` artifact for the top-down view.
+/// Parse an rlog's modelV2 into a `model.json` artifact (top-down + overlay).
 pub async fn parse_model_and_store(
     state: &AppState,
     dongle: &str,
@@ -326,11 +341,11 @@ pub async fn parse_model_and_store(
     file: &str,
     raw: &[u8],
 ) -> AppResult<()> {
-    let frames = extract_model(file, raw);
-    if frames.is_empty() {
+    let artifact = extract_model(file, raw);
+    if artifact.frames.is_empty() {
         return Ok(());
     }
-    let json = serde_json::to_vec(&ModelArtifact { frames }).unwrap_or_default();
+    let json = serde_json::to_vec(&artifact).unwrap_or_default();
     let key = blob_key(dongle, ts, seg, "model.json");
     state
         .blobs

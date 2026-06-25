@@ -95,6 +95,9 @@ export const api = {
   // admin: transcode device
   transcode: () => req('GET', '/v1/admin/transcode'),
   setTranscode: (device) => req('POST', '/v1/admin/transcode', { device }),
+  // road-camera calibration for the model overlay
+  camCalib: () => req('GET', '/v1/admin/cam-calib'),
+  setCamCalib: (c) => req('POST', '/v1/admin/cam-calib', c),
   // device settings (openpilot params over SSH)
   deviceParams: (dongle) => req('GET', `/v1/devices/${dongle}/params`),
   setDeviceParam: (dongle, key, value) => req('POST', `/v1/devices/${dongle}/params`, { key, value }),
