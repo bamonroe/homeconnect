@@ -32,34 +32,79 @@ impl Kind {
 pub struct Spec {
     pub key: &'static str,
     pub label: &'static str,
+    pub group: &'static str,
     pub kind: Kind,
     pub help: &'static str,
     /// (value, label) choices for `Enum`.
     pub options: &'static [(&'static str, &'static str)],
 }
 
-/// The allowlist. Deliberately conservative: reversible, user-facing toggles only
-/// — nothing touching identity, calibration, credentials, or safety internals.
+// Concise constructors keep the (large) allowlist readable.
+const fn b(key: &'static str, group: &'static str, label: &'static str, help: &'static str) -> Spec {
+    Spec { key, group, label, kind: Kind::Bool, help, options: &[] }
+}
+const fn info(key: &'static str, group: &'static str, label: &'static str) -> Spec {
+    Spec { key, group, label, kind: Kind::Info, help: "", options: &[] }
+}
+
+/// The allowlist. Deliberately conservative: reversible, user-facing settings
+/// (sunnypilot/openpilot toggles) — nothing touching identity, calibration,
+/// credentials, tuning blobs, or safety internals. Booleans validate to 0/1; the
+/// one enum has a known mapping. Grouped for display in source order.
 pub const SPECS: &[Spec] = &[
-    Spec { key: "OpenpilotEnabledToggle", label: "openpilot enabled", kind: Kind::Bool,
-        help: "Master switch for openpilot engagement.", options: &[] },
-    Spec { key: "ExperimentalMode", label: "Experimental mode", kind: Kind::Bool,
-        help: "End-to-end longitudinal control.", options: &[] },
-    Spec { key: "DisengageOnAccelerator", label: "Disengage on gas", kind: Kind::Bool,
-        help: "Pressing the accelerator disengages openpilot.", options: &[] },
-    Spec { key: "IsLdwEnabled", label: "Lane-departure warnings", kind: Kind::Bool,
-        help: "Warn on lane drift when not engaged.", options: &[] },
-    Spec { key: "RecordFront", label: "Record driver camera", kind: Kind::Bool,
-        help: "Record the driver-facing camera with drives.", options: &[] },
-    Spec { key: "RecordAudio", label: "Record microphone", kind: Kind::Bool,
-        help: "Record cabin audio with drives.", options: &[] },
-    Spec { key: "LongitudinalPersonality", label: "Following distance", kind: Kind::Enum,
+    // ── Driving ──────────────────────────────────────────────────────────────
+    b("OpenpilotEnabledToggle", "Driving", "openpilot enabled", "Master switch for openpilot engagement."),
+    b("ExperimentalMode", "Driving", "Experimental mode", "End-to-end longitudinal (let the model brake/accelerate)."),
+    b("AlphaLongitudinalEnabled", "Driving", "openpilot longitudinal", "openpilot controls gas + brake (off = stock ACC)."),
+    b("DynamicExperimentalControl", "Driving", "Dynamic experimental control", "Auto-switch between experimental and chill."),
+    b("DisengageOnAccelerator", "Driving", "Disengage on gas", "Pressing the accelerator disengages openpilot."),
+    Spec { key: "LongitudinalPersonality", group: "Driving", label: "Following distance", kind: Kind::Enum,
         help: "Gap kept from the lead car.",
         options: &[("0", "Relaxed"), ("1", "Standard"), ("2", "Aggressive")] },
-    // Read-only info.
-    Spec { key: "DongleId", label: "Dongle ID", kind: Kind::Info, help: "", options: &[] },
-    Spec { key: "GitBranch", label: "Software branch", kind: Kind::Info, help: "", options: &[] },
-    Spec { key: "GithubUsername", label: "GitHub user (SSH keys)", kind: Kind::Info, help: "", options: &[] },
+
+    // ── Steering (MADS) ──────────────────────────────────────────────────────
+    b("Mads", "Steering (MADS)", "Enable MADS", "Modified Assistive Driving — steering independent of cruise."),
+    b("MadsMainCruiseAllowed", "Steering (MADS)", "Engage with main cruise", "Allow MADS to engage from the MAIN cruise button."),
+    b("MadsUnifiedEngagementMode", "Steering (MADS)", "Unified engagement", "Engage lateral + longitudinal together."),
+    b("NeuralNetworkLateralControl", "Steering (MADS)", "Neural-net lateral control", "Use the NNLC steering model when available."),
+    b("AutoLaneChangeBsmDelay", "Steering (MADS)", "Blind-spot lane-change delay", "Wait on blind-spot monitor before auto lane change."),
+    b("BlinkerPauseLateralControl", "Steering (MADS)", "Pause steering on blinker", "Hand back steering while the turn signal is on."),
+
+    // ── Speed & navigation ───────────────────────────────────────────────────
+    b("SmartCruiseControlVision", "Speed & nav", "Vision curve slowing", "Slow for curves the camera sees."),
+    b("SmartCruiseControlMap", "Speed & nav", "Map speed limits", "Use offline map speed limits."),
+    b("RoadNameToggle", "Speed & nav", "Show road name", "Display the current road name."),
+
+    // ── Display & alerts ─────────────────────────────────────────────────────
+    b("IsLdwEnabled", "Display & alerts", "Lane-departure warnings", "Warn on lane drift when not engaged."),
+    b("GreenLightAlert", "Display & alerts", "Green-light alert", "Chime when a stopped light turns green."),
+    b("LeadDepartAlert", "Display & alerts", "Lead-departure alert", "Chime when the lead car pulls away."),
+    b("ShowTurnSignals", "Display & alerts", "Turn-signal icons", "Show blinker icons on screen."),
+    b("DevUIInfo", "Display & alerts", "Developer UI", "Show extra developer readouts."),
+    b("TorqueBar", "Display & alerts", "Torque bar", "Show the steering-torque bar."),
+    b("StandstillTimer", "Display & alerts", "Standstill timer", "Show how long you've been stopped."),
+    b("QuietMode", "Display & alerts", "Quiet mode", "Mute most non-critical chimes."),
+    b("RainbowMode", "Display & alerts", "Rainbow path", "Rainbow-colored driving path. For fun."),
+
+    // ── Recording ────────────────────────────────────────────────────────────
+    b("RecordFront", "Recording", "Record driver camera", "Record the driver-facing camera with drives."),
+    b("RecordAudio", "Recording", "Record microphone", "Record cabin audio with drives."),
+    b("RecordAudioFeedback", "Recording", "Record audio feedback", "Record a short clip when you give feedback."),
+
+    // ── Connectivity & updates ───────────────────────────────────────────────
+    b("SshEnabled", "Connectivity & updates", "SSH enabled", "Allow SSH access to the device."),
+    b("AdbEnabled", "Connectivity & updates", "ADB enabled", "Allow Android Debug Bridge access."),
+    b("GsmMetered", "Connectivity & updates", "Cellular metered", "Treat the SIM connection as metered."),
+    b("OnroadUploads", "Connectivity & updates", "Upload while driving", "Allow uploads during drives (not just parked)."),
+    b("SunnylinkEnabled", "Connectivity & updates", "sunnylink enabled", "Connect to sunnylink."),
+    b("DisableUpdates", "Connectivity & updates", "Pause software updates", "Stop fetching/installing updates."),
+
+    // ── Device (read-only) ───────────────────────────────────────────────────
+    info("Version", "Device", "Version"),
+    info("GitBranch", "Device", "Branch"),
+    info("DongleId", "Device", "Dongle ID"),
+    info("HardwareSerial", "Device", "Serial"),
+    info("GithubUsername", "Device", "GitHub user (SSH keys)"),
 ];
 
 fn spec(key: &str) -> Option<&'static Spec> {

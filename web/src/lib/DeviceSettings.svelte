@@ -49,6 +49,8 @@
     }
   }
 
+  let groups = $derived(dp ? [...new Set(dp.specs.map((s) => s.group))] : []);
+
   $effect(() => { loadDevices(); });
 </script>
 
@@ -82,27 +84,30 @@
       <p class="muted small">Changes are written to the device over SSH; most apply on the next ignition.</p>
     {/if}
 
-    <div class="card">
-      {#each dp.specs as s}
-        {#if s.kind === 'info'}
-          <div class="drow"><span>{s.label}</span><span class="muted">{dp.values[s.key] || '—'}</span></div>
-        {:else if s.kind === 'bool'}
-          <label class="drow">
-            <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
-            <input type="checkbox" checked={dp.values[s.key] === '1'} disabled={busy || !dp.online}
-              onchange={(e) => setParam(s.key, e.currentTarget.checked ? '1' : '0')} />
-          </label>
-        {:else if s.kind === 'enum'}
-          <label class="drow">
-            <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
-            <select value={dp.values[s.key] ?? ''} disabled={busy || !dp.online}
-              onchange={(e) => setParam(s.key, e.currentTarget.value)}>
-              {#each s.options as o}<option value={o.value}>{o.label}</option>{/each}
-            </select>
-          </label>
-        {/if}
-      {/each}
-    </div>
+    {#each groups as g}
+      <div class="card">
+        <h3>{g}</h3>
+        {#each dp.specs.filter((s) => s.group === g) as s}
+          {#if s.kind === 'info'}
+            <div class="drow"><span>{s.label}</span><span class="muted">{dp.values[s.key] || '—'}</span></div>
+          {:else if s.kind === 'bool'}
+            <label class="drow">
+              <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
+              <input type="checkbox" checked={dp.values[s.key] === '1'} disabled={busy || !dp.online}
+                onchange={(e) => setParam(s.key, e.currentTarget.checked ? '1' : '0')} />
+            </label>
+          {:else if s.kind === 'enum'}
+            <label class="drow">
+              <span>{s.label}{#if s.help}<span class="muted small"> — {s.help}</span>{/if}</span>
+              <select value={dp.values[s.key] ?? ''} disabled={busy || !dp.online}
+                onchange={(e) => setParam(s.key, e.currentTarget.value)}>
+                {#each s.options as o}<option value={o.value}>{o.label}</option>{/each}
+              </select>
+            </label>
+          {/if}
+        {/each}
+      </div>
+    {/each}
   {/if}
 </div>
 
@@ -114,7 +119,8 @@
   .devices .active { border-color: var(--accent); }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #6e7681; margin-left: 6px; }
   .dot.on { background: #3fb950; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 4px 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 4px 16px; margin-bottom: 14px; }
+  h3 { margin: 12px 0 4px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
   .small { font-size: 12px; }
   .ok { color: #3fb950; }
   .drow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
