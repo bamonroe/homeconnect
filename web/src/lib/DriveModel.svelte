@@ -7,7 +7,7 @@
   const FWD = 90; // meters of forward range shown
   const LAT = 18; // meters left/right shown
   const cx = W / 2;
-  const sx = (y) => cx - (y / LAT) * cx; // +y is left → screen left
+  const sx = (y) => cx + (y / LAT) * cx; // device frame: +y is right → screen right
   const sy = (x) => H - (Math.max(0, x) / FWD) * H; // forward → up
   const poly = (xy) => {
     if (!xy || !xy.x) return '';
