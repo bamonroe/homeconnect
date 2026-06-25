@@ -163,8 +163,9 @@ More can be mined from the qlog data we already collect. Rough priority:
 **All-drives map** — [x] every drive's GPS path on one map, colored by autonomy (Stats page).
 
 **Flashy / bigger projects**
-- [ ] openpilot-style **overlay on the road camera** — predicted path + lane lines + lead box (`modelV2`; needs camera projection + a canvas synced to playback).
-- [ ] **All-drives heatmap** — every trip's GPS aggregated on one map.
+- [x] **Top-down model view** — `modelV2` path / lane lines / road edges / lead in a bird's-eye canvas synced to playback (parsed from the rlog → `model.json`).
+- [ ] openpilot-style **overlay on the road camera** — same data drawn *on* the video. Deferred: the comma-three road cam is fisheye, so accurate projection is non-trivial (openpilot's own single-focal intrinsic is "probably wrong").
+- [x] **All-drives heatmap** — every trip's GPS on one map (Stats page).
 
 **Intentionally out of scope**
 - Live view / remote control (WebRTC + steering/throttle) — security blast radius.
