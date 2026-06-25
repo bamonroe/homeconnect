@@ -234,8 +234,17 @@ pub const SPECS: &[Spec] = &[
         "Suppress most non-critical chimes and spoken alerts."),
 
     // ── Connectivity & updates ───────────────────────────────────────────────
-    b("SshEnabled", "Connectivity & updates", "SSH enabled",
-        "Allow remote terminal login to the device over SSH using your authorized keys. Needed for manual/advanced access; leave off if you don't use it. (homeconnect's own sync uses a separate restricted key and is unaffected by this.)"),
+    // Read-only on purpose: SshEnabled start/stops the whole sshd service (via an
+    // immediate `ssh-param-watcher.path` unit), and SSH is the channel homeconnect
+    // itself uses for sync, device settings, and model selection. Turning it off
+    // here would cut homeconnect's access with no way to re-enable remotely (you'd
+    // have to re-enable it on the device's own screen). So we only display it.
+    Spec {
+        key: "SshEnabled", group: "Connectivity & updates", label: "SSH service",
+        kind: Kind::Info,
+        help: "Whether the device's SSH service is running (1 = on). homeconnect uses SSH for sync, device settings, and model selection, so it's shown here but not toggled — turning SSH off can't be undone remotely. Change it on the device screen (Settings → Developer → SSH).",
+        options: &[], min: 0, max: 0, step: 0, unit: "", dep_key: "", dep_values: &[],
+    },
     b("AdbEnabled", "Connectivity & updates", "ADB enabled",
         "Allow Android Debug Bridge (ADB) connections — a developer tool for shell and file access to the device over USB or network."),
     b("GsmMetered", "Connectivity & updates", "Cellular metered",
