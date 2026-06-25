@@ -1,8 +1,6 @@
 <script>
   import { api } from './api.js';
 
-  let { onback } = $props();
-
   let cfg = $state(null);
   let error = $state('');
   let msg = $state('');
@@ -125,7 +123,6 @@
 
 <div class="page">
   <div class="bar">
-    <button class="ghost" onclick={onback}>← Drives</button>
     <h2>Settings</h2>
   </div>
 

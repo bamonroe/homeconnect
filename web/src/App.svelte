@@ -56,6 +56,10 @@
     selected = null;
     view = 'drives';
   }
+  function goDrives() {
+    selected = null;
+    view = 'drives';
+  }
 </script>
 
 <div class="layout">
@@ -69,11 +73,10 @@
             {queue.drives} drive{queue.drives === 1 ? '' : 's'} · {queue.files} file{queue.files === 1 ? '' : 's'}
           </span>
         {/if}
+        <button class="ghost" class:active={view === 'drives'} onclick={goDrives}>Drives</button>
         {#if user?.is_admin}
-          <button class="ghost" class:active={view === 'device'}
-            onclick={() => (view = view === 'device' ? 'drives' : 'device')}>Device</button>
-          <button class="ghost" class:active={view === 'settings'}
-            onclick={() => (view = view === 'settings' ? 'drives' : 'settings')}>Settings</button>
+          <button class="ghost" class:active={view === 'device'} onclick={() => (view = 'device')}>Device</button>
+          <button class="ghost" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
         {/if}
         <span class="muted">{user?.username ?? ''}</span>
         <button class="ghost" onclick={logout}>Log out</button>
@@ -87,9 +90,9 @@
     {#if !token}
       <Login {onLogin} />
     {:else if view === 'settings'}
-      <Settings onback={() => (view = 'drives')} />
+      <Settings />
     {:else if view === 'device'}
-      <DeviceSettings onback={() => (view = 'drives')} />
+      <DeviceSettings />
     {:else if selected}
       {#key selected.route.fullname}
         <Drive route={selected.route} onback={() => (selected = null)} />

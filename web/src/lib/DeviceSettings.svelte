@@ -1,8 +1,6 @@
 <script>
   import { api } from './api.js';
 
-  let { onback } = $props();
-
   let devices = $state([]);
   let dev = $state(null); // selected dongle
   let dp = $state(null); // { online, specs, values, pending }
@@ -84,7 +82,6 @@
 
 <div class="page">
   <div class="bar">
-    <button class="ghost" onclick={onback}>← Drives</button>
     <h2>Device settings</h2>
     {#if devices.length > 1}
       <div class="devices">
