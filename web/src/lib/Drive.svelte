@@ -492,6 +492,11 @@
     map = new maplibregl.Map({ container: mapEl, style: STYLE, center: [0, 0], zoom: 1 });
     map.on('load', () => { mapReady = true; map.resize(); maybeDraw(); });
     videoEl.addEventListener('timeupdate', () => syncMarker(videoEl.currentTime));
+    // A media (re)load resets playbackRate to 1; re-assert the selected speed.
+    videoEl.addEventListener('loadedmetadata', () => {
+      videoEl.playbackRate = rate;
+      if (audioEl && !movieMode) audioEl.playbackRate = rate;
+    });
     wireAudioSync();
     try {
       // Which cameras already have a stitched movie (decides the playback path).
@@ -741,7 +746,7 @@
   .chip.brk { background: #f85149; border-color: #f85149; }
   .arrow { font-size: 16px; color: #444; }
   .arrow.lit { color: #3fb950; }
-  .ctrl { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; }
+  .ctrl { display: flex; align-items: center; justify-content: space-between; gap: 8px 10px; flex-wrap: wrap; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; }
   .moviebadge { font-size: 11px; color: #3fb950; border: 1px solid #2ea043; border-radius: 999px; padding: 1px 8px; }
   .vol { display: inline-flex; align-items: center; gap: 6px; }
   .vol input { width: 84px; }
