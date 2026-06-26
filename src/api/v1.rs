@@ -233,7 +233,7 @@ pub async fn my_paths(
     }
     let rows: Vec<(String, String, f64, f64, f64, f64)> = sqlx::query_as(
         "SELECT fullname, segment_numbers, engaged_meters, telem_meters, length, drive_seconds FROM routes \
-         WHERE maxqlog != -1 AND start_time_utc_millis > 0 AND device_dongle_id IN ( \
+         WHERE maxqlog != -1 AND device_dongle_id IN ( \
             SELECT dongle_id FROM devices WHERE owner_id = ? OR ? = 1 \
             UNION SELECT device_dongle_id FROM authorized_users WHERE user_id = ?) \
          ORDER BY start_time_utc_millis DESC LIMIT 300",
@@ -289,7 +289,7 @@ pub async fn my_stats(
     let rows: Vec<(f64, f64, f64, f64, f64, i64, i64, i64)> = sqlx::query_as(
         "SELECT length, drive_seconds, engaged_meters, telem_meters, max_speed, \
                 disengage_count, hard_brake_count, hard_accel_count FROM routes \
-         WHERE maxqlog != -1 AND start_time_utc_millis > 0 AND device_dongle_id IN ( \
+         WHERE maxqlog != -1 AND device_dongle_id IN ( \
             SELECT dongle_id FROM devices WHERE owner_id = ? OR ? = 1 \
             UNION SELECT device_dongle_id FROM authorized_users WHERE user_id = ?)",
     )
@@ -516,10 +516,10 @@ pub async fn routes_segments(
         .await?
     } else {
         sqlx::query_as(
-            // start_time_utc_millis > 0 hides GPS-less stubs (engine-on-but-never-
-            // moved / no fix) that have no date, distance, or useful track.
+            // GPS-less stubs (engine-on-but-never-moved / no fix) are handled by the
+            // ignore rules now (they're 0-mile), not a hardcoded filter.
             "SELECT * FROM routes \
-             WHERE device_dongle_id = ? AND maxqlog != -1 AND start_time_utc_millis > 0 \
+             WHERE device_dongle_id = ? AND maxqlog != -1 \
                AND start_time_utc_millis >= ? AND start_time_utc_millis <= ? \
              ORDER BY start_time_utc_millis DESC LIMIT ? OFFSET ?",
         )

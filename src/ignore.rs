@@ -15,6 +15,11 @@ use crate::state::AppState;
 
 const KEY: &str = "ignore_rules";
 
+/// Default when the rules have never been configured: hide zero-movement records
+/// (engine-on-but-never-moved / no-GPS stubs all have 0 miles). Editable/removable
+/// in Settings — saving `[]` turns filtering off entirely.
+const DEFAULT_RULES_JSON: &str = r#"[{"conditions":[{"field":"miles","op":"lt","value":0.1}]}]"#;
+
 #[derive(Deserialize, Clone)]
 pub struct Condition {
     pub field: String, // "miles" | "minutes"
@@ -35,10 +40,15 @@ pub async fn load_rules(state: &AppState) -> Vec<Rule> {
         .await
         .ok()
         .flatten();
-    v.and_then(|s| serde_json::from_str::<Vec<Rule>>(&s).ok()).unwrap_or_default()
+    match v {
+        // Configured (possibly `[]` = filtering off) → use it.
+        Some(s) => serde_json::from_str::<Vec<Rule>>(&s).unwrap_or_default(),
+        // Never configured → the default rule.
+        None => serde_json::from_str::<Vec<Rule>>(DEFAULT_RULES_JSON).unwrap_or_default(),
+    }
 }
 
-/// The raw JSON value (for the settings GET).
+/// The raw JSON value (for the settings GET) — the default rule if never configured.
 pub async fn rules_json(state: &AppState) -> Value {
     let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
         .bind(KEY)
@@ -46,7 +56,10 @@ pub async fn rules_json(state: &AppState) -> Value {
         .await
         .ok()
         .flatten();
-    v.and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or_else(|| Value::Array(vec![]))
+    match v {
+        Some(s) => serde_json::from_str::<Value>(&s).unwrap_or_else(|_| Value::Array(vec![])),
+        None => serde_json::from_str::<Value>(DEFAULT_RULES_JSON).unwrap_or_else(|_| Value::Array(vec![])),
+    }
 }
 
 /// Validate + persist the rules (rejects unknown fields/ops).
