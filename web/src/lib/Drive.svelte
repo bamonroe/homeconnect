@@ -602,6 +602,7 @@
                     <span class="chip">{tnow.gear?.toUpperCase() ?? '—'}</span>
                     {#if tnow.engaged}<span class="chip on">openpilot{tnow.lat === true && tnow.long === false ? ' · steer' : tnow.long === true && tnow.lat === false ? ' · cruise' : ''}</span>{/if}
                     {#if tnow.brake}<span class="chip brk">brake</span>{/if}
+                    {#if tnow.dm_distracted}<span class="chip distr">distracted</span>{/if}
                     <span class="arrow" class:lit={tnow.lb}>◀</span>
                     <span class="arrow" class:lit={tnow.rb}>▶</span>
                   </div>
@@ -744,6 +745,7 @@
   .chip { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.25); }
   .chip.on { background: #2f81f7; border-color: #2f81f7; }
   .chip.brk { background: #f85149; border-color: #f85149; }
+  .chip.distr { background: #a371f7; border-color: #a371f7; }
   .arrow { font-size: 16px; color: #444; }
   .arrow.lit { color: #3fb950; }
   .ctrl { display: flex; align-items: center; justify-content: space-between; gap: 8px 10px; flex-wrap: wrap; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; }

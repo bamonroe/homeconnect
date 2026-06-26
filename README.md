@@ -174,7 +174,7 @@ More can be mined from the qlog data we already collect. Rough priority:
 
 **Higher value, moderate effort (verify the message is in the qlog first)**
 - [x] **Disengagement reasons** — each disengage tagged by the driver input at the transition (gas / brake / steering override, or manual). (Richer `onroadEvents` reasons still possible.)
-- [ ] **Driver attention** timeline + distracted markers (`driverMonitoringState`).
+- [x] **Driver attention** — distracted intervals marked on the timeline graph and a HUD "distracted" chip, from `driverMonitoringState` (face detection / distraction / awareness).
 - [ ] **Lead car / following distance** over time (`radarState`).
 - [x] **Device health** — peak temp, free space, memory per drive (`DeviceState`), on the drive stats strip.
 

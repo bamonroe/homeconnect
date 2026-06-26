@@ -55,6 +55,11 @@ struct Telem {
     cruise: bool,  // car cruise control on (cruiseState.enabled)
     soc: f32,      // state of charge / fuel level, percent (fuelGauge * 100)
     charging: bool,
+    // Driver monitoring (only meaningful while DM is active). `dm_aware` is the
+    // awareness level 0..1; -1 means DM wasn't actively monitoring at this sample.
+    dm_aware: f32,
+    dm_distracted: bool,
+    dm_face: bool,
 }
 
 /// Aggregate stats derived from a segment's telemetry samples.
@@ -209,6 +214,11 @@ struct Accum {
     cur_engaged: bool,    // latest longitudinal engagement (SelfdriveState.enabled)
     cur_lat: bool,        // latest lateral engagement (MADS active, selfdriveStateSP)
     cur_alert: i32,       // latest alert status (0 normal, 1 prompt, 2 critical)
+    // latest driver-monitoring state (driverMonitoringState)
+    cur_dm_active: bool,
+    cur_dm_face: bool,
+    cur_dm_distracted: bool,
+    cur_dm_aware: f32,
     seen_selfdrive: bool, // have we read engagement state yet this segment?
     // Device health (from DeviceState).
     max_temp: f32,
@@ -381,6 +391,7 @@ pub fn inspect_qlog(file: &str, raw: &[u8]) -> Vec<(String, usize)> {
             Ok(event::Which::CarState(_)) => "carState",
             Ok(event::Which::SelfdriveState(_)) => "selfdriveState",
             Ok(event::Which::SelfdriveStateSP(_)) => "selfdriveStateSP",
+            Ok(event::Which::DriverMonitoringState(_)) => "driverMonitoringState",
             Ok(event::Which::GpsLocationExternal(_)) | Ok(event::Which::GpsLocation(_)) => "gpsLocation",
             Ok(event::Which::Thumbnail(_)) => "thumbnail",
             Ok(_) => "other",
@@ -620,6 +631,13 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
                 emit_state_change(acc, t, mono);
             }
         }
+        // Driver monitoring: face detection, distraction, and the awareness level.
+        DriverMonitoringState(Ok(dm)) => {
+            acc.cur_dm_active = dm.get_is_active_mode();
+            acc.cur_dm_face = dm.get_face_detected();
+            acc.cur_dm_distracted = dm.get_is_distracted();
+            acc.cur_dm_aware = dm.get_awareness_status();
+        }
         CarState(Ok(cs)) => {
             // Downsample to ~4 Hz. Wait until we've seen the engagement state in
             // this segment so the `engaged` field is never a stale default
@@ -644,6 +662,9 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
                     cruise,
                     soc: cs.get_fuel_gauge() * 100.0,
                     charging: cs.get_charging(),
+                    dm_aware: if acc.cur_dm_active { acc.cur_dm_aware } else { -1.0 },
+                    dm_distracted: acc.cur_dm_active && acc.cur_dm_distracted,
+                    dm_face: acc.cur_dm_active && acc.cur_dm_face,
                 });
             }
         }

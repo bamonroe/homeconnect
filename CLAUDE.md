@@ -70,7 +70,7 @@ macros).
 | `access.rs` | `can_view_device/dongle/route` + `load_device` authorization helpers |
 | `storage.rs` | filesystem blob store; key = `{dongle}_{ts}--{seg}--{file}`, sharded by sha256 |
 | `ingest.rs` | `connectincoming` PUT handlers; qlog→parse, everything else→register URL |
-| `parse.rs` | qlog decode (capnp) → routes/segments + coords/events/telemetry (incl. MADS lateral/longitudinal engagement)/sprite + per-drive stats; `extract_model` builds `model.json` (modelV2 path/lanes/lead from the rlog) for the overlay/top-down; haversine; route aggregation; `reparse_all` |
+| `parse.rs` | qlog decode (capnp) → routes/segments + coords/events/telemetry (incl. MADS lateral/longitudinal engagement + driver monitoring: face/distracted/awareness)/sprite + per-drive stats; `extract_model` builds `model.json` (modelV2 path/lanes/lead from the rlog) for the overlay/top-down; haversine; route aggregation; `reparse_all` |
 | `cereal/mod.rs` | generated capnp bindings (built by `build.rs` from `vendor/cereal`) |
 | `athena.rs` | device websocket: `ConnectionManager`, 10s ping, online/offline, stale reaper |
 | `serve.rs` | `connectdata` blob serving with HTTP Range (206); transcode + audio serving |

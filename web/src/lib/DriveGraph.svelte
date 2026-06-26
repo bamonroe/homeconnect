@@ -55,6 +55,23 @@
     return out;
   });
 
+  // Driver-monitoring: was DM active at all this drive, and contiguous distracted
+  // runs → a band along the bottom.
+  let hasDM = $derived(telemetry.some((s) => (s.dm_aware ?? -1) >= 0));
+  let distracted = $derived.by(() => {
+    const out = [];
+    let start = null;
+    for (let i = 0; i < telemetry.length; i++) {
+      const d = telemetry[i].dm_distracted;
+      if (d && start === null) start = telemetry[i].t;
+      if (start !== null && (!d || i === telemetry.length - 1)) {
+        out.push({ x: (start / maxT) * W, w: Math.max(1.2, ((telemetry[i].t - start) / maxT) * W) });
+        start = null;
+      }
+    }
+    return out;
+  });
+
   let playX = $derived((Math.min(curT, maxT) / maxT) * W);
 
   function click(e) {
@@ -70,12 +87,14 @@
       {#each engaged as g}<rect class="eng" x={g.x} y="0" width={g.w} height={H} />{/each}
       <path class="spd" d={speedPath} />
       {#each marks as m}<line class={m.kind} x1={m.x} x2={m.x} y1="0" y2={H} />{/each}
+      {#each distracted as d}<rect class="distr" x={d.x} y={H - 6} width={d.w} height="6" />{/each}
       <line class="play" x1={playX} x2={playX} y1="0" y2={H} />
     </svg>
     <div class="legend muted small">
       <span><i class="eng"></i> openpilot</span>
       <span><i class="brake"></i> hard brake</span>
       <span><i class="accel"></i> hard accel</span>
+      {#if hasDM}<span><i class="distr"></i> distracted</span>{/if}
       <span class="right">peak {Math.round(maxSpeed)} mph</span>
     </div>
   </div>
@@ -88,6 +107,7 @@
   .spd { fill: none; stroke: var(--text); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
   .brake { stroke: #f85149; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
   .accel { stroke: #d29922; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+  .distr { fill: #a371f7; opacity: 0.9; }
   .play { stroke: #fff; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
   .legend { display: flex; gap: 12px; align-items: center; margin-top: 4px; }
   .legend .right { margin-left: auto; }
@@ -95,4 +115,5 @@
   .legend i.eng { background: var(--accent); opacity: 0.5; }
   .legend i.brake { background: #f85149; }
   .legend i.accel { background: #d29922; }
+  .legend i.distr { background: #a371f7; }
 </style>
