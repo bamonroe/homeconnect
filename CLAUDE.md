@@ -8,8 +8,8 @@ Everything needed to continue developing homeconnect. Read alongside
 A from-scratch, home-first reimplementation of comma connect (see README). The
 **device-facing API is a fixed contract** — the comma speaks comma's protocol and
 can't be changed, so those endpoints must match exactly. Everything else is ours.
-The reference oracle is a working Konik/connect-killer deploy (a Rust fork) at
-`/data/konik/src` — diff against it when a device behavior is unclear.
+(The interim Konik / RtZ reference deploys have been retired; for device behavior
+questions, diff against the upstream commaai/connect + openpilot sources.)
 
 ## Commits
 
