@@ -14,6 +14,7 @@ pub mod device_params;
 pub mod device_ssh;
 pub mod devsync;
 pub mod error;
+pub mod ignore;
 pub mod ingest;
 pub mod model_select;
 pub mod models;
@@ -99,6 +100,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/encoding", get(api::settings::get_encoding).post(api::settings::set_encoding))
         .route("/v1/admin/encoding/reencode", post(api::settings::reencode_movies))
         .route("/v1/admin/cam-calib", get(api::settings::get_cam_calib).post(api::settings::set_cam_calib))
+        .route("/v1/admin/ignore-rules", get(api::settings::get_ignore_rules).post(api::settings::set_ignore_rules))
         .route("/v1/devices/{dongle_id}/routes_segments", get(api::v1::routes_segments))
         .route("/v1/route/{fullname}/download", get(api::manage::download))
         .route("/v1/route/{fullname}/delete", post(api::manage::delete))

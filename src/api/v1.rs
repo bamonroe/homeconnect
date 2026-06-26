@@ -231,8 +231,8 @@ pub async fn my_paths(
         lat: f64,
         lng: f64,
     }
-    let rows: Vec<(String, String, f64, f64)> = sqlx::query_as(
-        "SELECT fullname, segment_numbers, engaged_meters, telem_meters FROM routes \
+    let rows: Vec<(String, String, f64, f64, f64, f64)> = sqlx::query_as(
+        "SELECT fullname, segment_numbers, engaged_meters, telem_meters, length, drive_seconds FROM routes \
          WHERE maxqlog != -1 AND device_dongle_id IN ( \
             SELECT dongle_id FROM devices WHERE owner_id = ? OR ? = 1 \
             UNION SELECT device_dongle_id FROM authorized_users WHERE user_id = ?) \
@@ -244,8 +244,12 @@ pub async fn my_paths(
     .fetch_all(&state.pool)
     .await?;
 
+    let rules = crate::ignore::load_rules(&state).await;
     let mut out: Vec<Value> = Vec::new();
-    for (fullname, segs_json, em, tm) in rows {
+    for (fullname, segs_json, em, tm, length, ds) in rows {
+        if crate::ignore::is_ignored(&rules, length, ds / 60.0) {
+            continue;
+        }
         let Some((dongle, ts)) = fullname.split_once('|') else { continue };
         let nums: Vec<i64> = serde_json::from_str(&segs_json).unwrap_or_default();
         let mut pts: Vec<[f64; 2]> = Vec::new();
@@ -280,26 +284,11 @@ pub async fn my_stats(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> AppResult<Json<Value>> {
-    #[derive(sqlx::FromRow, Default)]
-    struct Agg {
-        routes: i64,
-        miles: f64,
-        drive_s: f64,
-        engaged_m: f64,
-        telem_m: f64,
-        max_speed: f64,
-        disengage: i64,
-        hard_brake: i64,
-        hard_accel: i64,
-    }
-    let a: Agg = sqlx::query_as(
-        "SELECT COUNT(*) AS routes, COALESCE(SUM(length),0) AS miles, \
-                COALESCE(SUM(drive_seconds),0) AS drive_s, COALESCE(SUM(engaged_meters),0) AS engaged_m, \
-                COALESCE(SUM(telem_meters),0) AS telem_m, COALESCE(MAX(max_speed),0) AS max_speed, \
-                COALESCE(SUM(disengage_count),0) AS disengage, \
-                COALESCE(SUM(hard_brake_count),0) AS hard_brake, \
-                COALESCE(SUM(hard_accel_count),0) AS hard_accel \
-         FROM routes \
+    // Per-route metrics, aggregated in Rust so the ignore rules can drop trivial
+    // drives from the totals.
+    let rows: Vec<(f64, f64, f64, f64, f64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT length, drive_seconds, engaged_meters, telem_meters, max_speed, \
+                disengage_count, hard_brake_count, hard_accel_count FROM routes \
          WHERE maxqlog != -1 AND device_dongle_id IN ( \
             SELECT dongle_id FROM devices WHERE owner_id = ? OR ? = 1 \
             UNION SELECT device_dongle_id FROM authorized_users WHERE user_id = ?)",
@@ -307,23 +296,41 @@ pub async fn my_stats(
     .bind(user.id)
     .bind(user.is_admin)
     .bind(user.id)
-    .fetch_one(&state.pool)
+    .fetch_all(&state.pool)
     .await
     .unwrap_or_default();
 
-    let engaged_mi = a.engaged_m / METERS_PER_MILE;
+    let rules = crate::ignore::load_rules(&state).await;
+    let (mut routes, mut miles, mut drive_s, mut engaged_m, mut telem_m) = (0i64, 0.0, 0.0, 0.0, 0.0);
+    let (mut max_speed, mut disengage, mut hard_brake, mut hard_accel) = (0.0f64, 0i64, 0i64, 0i64);
+    for (length, ds, em, tm, ms, dis, hb, ha) in rows {
+        if crate::ignore::is_ignored(&rules, length, ds / 60.0) {
+            continue;
+        }
+        routes += 1;
+        miles += length;
+        drive_s += ds;
+        engaged_m += em;
+        telem_m += tm;
+        max_speed = max_speed.max(ms);
+        disengage += dis;
+        hard_brake += hb;
+        hard_accel += ha;
+    }
+
+    let engaged_mi = engaged_m / METERS_PER_MILE;
     Ok(Json(json!({
-        "routes": a.routes,
-        "miles": a.miles,
-        "drive_hours": a.drive_s / 3600.0,
+        "routes": routes,
+        "miles": miles,
+        "drive_hours": drive_s / 3600.0,
         "engaged_miles": engaged_mi,
-        "autonomy": if a.telem_m > 0.0 { 100.0 * a.engaged_m / a.telem_m } else { 0.0 },
-        "disengagements": a.disengage,
-        "disengagements_per_100mi": if engaged_mi > 0.0 { a.disengage as f64 / engaged_mi * 100.0 } else { 0.0 },
-        "max_speed": a.max_speed,
-        "avg_speed": if a.drive_s > 0.0 { (a.telem_m / a.drive_s) * MPH_PER_MS } else { 0.0 },
-        "hard_brake": a.hard_brake,
-        "hard_accel": a.hard_accel,
+        "autonomy": if telem_m > 0.0 { 100.0 * engaged_m / telem_m } else { 0.0 },
+        "disengagements": disengage,
+        "disengagements_per_100mi": if engaged_mi > 0.0 { disengage as f64 / engaged_mi * 100.0 } else { 0.0 },
+        "max_speed": max_speed,
+        "avg_speed": if drive_s > 0.0 { (telem_m / drive_s) * MPH_PER_MS } else { 0.0 },
+        "hard_brake": hard_brake,
+        "hard_accel": hard_accel,
     })))
 }
 
@@ -528,9 +535,18 @@ pub async fn routes_segments(
     // One short-lived share token for the caller, appended to media URLs.
     let sig = auth::issue_hs512_ttl(&state.config.jwt_secret_b64, &user.identity, 86_400)
         .map_err(AppError::Other)?;
+    // Flag drives the ignore rules match (the client hides them, with a toggle).
+    let rules = crate::ignore::load_rules(&state).await;
     let arr: Vec<Value> = rows
         .iter()
-        .map(|r| route_json(r, &state.config.public_url, &sig))
+        .map(|r| {
+            let mut j = route_json(r, &state.config.public_url, &sig);
+            let ignored = crate::ignore::is_ignored(&rules, r.length, r.drive_seconds / 60.0);
+            if let Some(o) = j.as_object_mut() {
+                o.insert("ignored".into(), json!(ignored));
+            }
+            j
+        })
         .collect();
     Ok(Json(json!(arr)))
 }

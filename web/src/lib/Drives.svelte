@@ -7,6 +7,9 @@
   let devices = $state([]);
   let dongle = $state(null);
   let routes = $state([]);
+  let showIgnored = $state(false);
+  let hiddenCount = $derived(routes.filter((r) => r.ignored).length);
+  let visibleRoutes = $derived(showIgnored ? routes : routes.filter((r) => !r.ignored));
   let error = $state('');
   let loading = $state(true);
   let showAdd = $state(false);
@@ -121,9 +124,15 @@
   {:else if !routes.length}
     <p class="muted">No drives yet. Once your device uploads and the logs parse, they’ll appear here.</p>
   {:else}
+    {#if hiddenCount > 0}
+      <p class="muted small hiddenbar">
+        {hiddenCount} drive{hiddenCount === 1 ? '' : 's'} hidden by ignore rules.
+        <button class="linkbtn" onclick={() => (showIgnored = !showIgnored)}>{showIgnored ? 'Hide them' : 'Show them'}</button>
+      </p>
+    {/if}
     <div class="list">
-      {#each routes as r}
-        <button class="card" onclick={() => onopen(r)}>
+      {#each visibleRoutes as r}
+        <button class="card" class:ignored={r.ignored} onclick={() => onopen(r)}>
           <div class="thumb">
             <img src={spriteUrl(r)} alt="" loading="lazy"
               onerror={(e) => (e.currentTarget.style.visibility = 'hidden')} />
@@ -155,6 +164,10 @@
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #6e7681; margin-left: 6px; }
   .dot.on { background: #3fb950; }
   .list { display: grid; gap: 10px; }
+  .hiddenbar { margin: 0 0 10px; }
+  .small { font-size: 12px; }
+  .linkbtn { background: none; border: none; color: var(--accent); cursor: pointer; font: inherit; padding: 0; text-decoration: underline; }
+  .card.ignored { opacity: 0.5; }
   .card {
     display: flex; gap: 14px; align-items: center; text-align: left;
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;

@@ -8,6 +8,8 @@
   let tc = $state(null); // { current, devices: [{value,label,encodes}] }
   let sync = $state(null); // { enabled, interval_secs, types:[], all_types:[] }
   let encode = $state(null); // { enabled, interval_secs }
+  let ignoreRules = $state([]); // [{ conditions: [{field, op, value}] }]
+  let ignoreMsg = $state('');
 
   const TYPE_LABELS = {
     qcamera: 'Road (qcamera)',
@@ -21,10 +23,10 @@
     error = '';
     try {
       // Fetch concurrently — one round trip instead of several sequential ones.
-      const [c, t, s, e] = await Promise.all([
-        api.retention(), api.transcode(), api.syncSettings(), api.encodingSettings(),
+      const [c, t, s, e, ir] = await Promise.all([
+        api.retention(), api.transcode(), api.syncSettings(), api.encodingSettings(), api.ignoreRules(),
       ]);
-      cfg = c; tc = t; sync = s; encode = e;
+      cfg = c; tc = t; sync = s; encode = e; ignoreRules = ir.rules || [];
     } catch (e) {
       error = e.message;
     }
@@ -137,6 +139,27 @@
       busy = false;
     }
   }
+  function addRule() { ignoreRules = [...ignoreRules, { conditions: [{ field: 'minutes', op: 'lt', value: 1 }] }]; }
+  function removeRule(ri) { ignoreRules = ignoreRules.filter((_, i) => i !== ri); }
+  function addCond(ri) { ignoreRules[ri].conditions = [...ignoreRules[ri].conditions, { field: 'miles', op: 'lt', value: 0.2 }]; ignoreRules = [...ignoreRules]; }
+  function removeCond(ri, ci) { ignoreRules[ri].conditions = ignoreRules[ri].conditions.filter((_, i) => i !== ci); ignoreRules = [...ignoreRules]; }
+  async function saveIgnore() {
+    busy = true; error = ''; msg = ''; ignoreMsg = '';
+    try {
+      // drop empty rules; coerce values to numbers
+      const rules = ignoreRules
+        .map((r) => ({ conditions: r.conditions.map((c) => ({ field: c.field, op: c.op, value: Number(c.value) || 0 })) }))
+        .filter((r) => r.conditions.length);
+      const res = await api.setIgnoreRules(rules);
+      ignoreRules = res.rules || [];
+      ignoreMsg = 'Ignore rules saved.';
+    } catch (e) {
+      ignoreMsg = e.message;
+    } finally {
+      busy = false;
+    }
+  }
+
   async function reencodeAll() {
     if (!confirm('Re-encode every movie with the current settings? Existing movies are rebuilt in the background (deleted ones stay deleted).')) return;
     busy = true; error = ''; msg = '';
@@ -312,6 +335,44 @@
       </div>
     {/if}
 
+    <div class="card">
+      <h3>Ignore rules</h3>
+      <p class="muted small">
+        Hide trivial drives from the Drives list and the Stats totals. A drive is ignored if it
+        matches <b>any</b> rule, and a rule matches when <b>all</b> of its conditions are true.
+        Nothing is deleted — clearing the rules brings every drive back.
+      </p>
+      {#each ignoreRules as rule, ri}
+        {#if ri > 0}<div class="oror">OR</div>{/if}
+        <div class="rule">
+          {#each rule.conditions as c, ci}
+            {#if ci > 0}<span class="andlbl">and</span>{/if}
+            <span class="cond">
+              <select bind:value={c.field} disabled={busy}>
+                <option value="miles">miles</option>
+                <option value="minutes">minutes</option>
+              </select>
+              <select bind:value={c.op} disabled={busy}>
+                <option value="lt">&lt;</option>
+                <option value="le">≤</option>
+                <option value="gt">&gt;</option>
+                <option value="ge">≥</option>
+              </select>
+              <input type="number" step="0.1" min="0" bind:value={c.value} disabled={busy} />
+              <button class="x" title="Remove condition" onclick={() => removeCond(ri, ci)}>✕</button>
+            </span>
+          {/each}
+          <button class="ghost xs" disabled={busy} onclick={() => addCond(ri)}>+ and</button>
+          <button class="ghost xs" disabled={busy} onclick={() => removeRule(ri)}>remove rule</button>
+        </div>
+      {/each}
+      <div class="actions">
+        <button class="ghost" disabled={busy} onclick={addRule}>+ Add rule</button>
+        <button disabled={busy} onclick={saveIgnore}>Save rules</button>
+        {#if ignoreMsg}<span class="muted small">{ignoreMsg}</span>{/if}
+      </div>
+    </div>
+
     {#if tc}
       <div class="card">
         <h3>Transcoding device</h3>
@@ -359,7 +420,16 @@
   label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
   label.toggle { flex-direction: row; align-items: center; gap: 10px; margin-bottom: 0; font-size: 14px; color: var(--text); }
   label.toggle input { width: 18px; height: 18px; }
-  .actions { display: flex; gap: 10px; margin-top: 6px; }
+  .actions { display: flex; gap: 10px; margin-top: 6px; align-items: center; flex-wrap: wrap; }
+  .rule { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; }
+  .oror { font-size: 11px; font-weight: 700; color: var(--muted); margin: 6px 0 6px 4px; }
+  .andlbl { font-size: 12px; color: var(--muted); }
+  .cond { display: inline-flex; align-items: center; gap: 4px; }
+  .cond select, .cond input { width: auto; }
+  .cond input[type="number"] { width: 72px; }
+  .cond .x { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 12px; }
+  .cond .x:hover { color: #f85149; }
+  .xs { padding: 3px 9px; font-size: 12px; }
   .stat { font-size: 16px; }
   .small { font-size: 12px; }
   .ok { color: #3fb950; }

@@ -182,6 +182,32 @@ pub async fn reencode_movies(
     Ok(Json(json!({ "ok": true, "cleared": cleared })))
 }
 
+/// GET /v1/admin/ignore-rules — the drive ignore rules (DNF: OR of AND-conditions).
+pub async fn get_ignore_rules(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    Ok(Json(json!({ "rules": crate::ignore::rules_json(&state).await })))
+}
+
+#[derive(Deserialize)]
+pub struct IgnoreRulesReq {
+    pub rules: Vec<crate::ignore::Rule>,
+}
+
+/// POST /v1/admin/ignore-rules — replace the ignore rules.
+pub async fn set_ignore_rules(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<IgnoreRulesReq>,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    crate::ignore::save_rules(&state, &req.rules).await?;
+    tracing::info!(user = %user.username, rules = req.rules.len(), "ignore rules updated");
+    Ok(Json(json!({ "ok": true, "rules": crate::ignore::rules_json(&state).await })))
+}
+
 /// GET /v1/admin/cam-calib — saved road-camera calibration for the model overlay
 /// (effective qcamera intrinsics + small rpy offsets). Defaults if unset.
 pub async fn get_cam_calib(

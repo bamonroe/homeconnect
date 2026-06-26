@@ -60,6 +60,8 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
 - **Local accounts** — username/password (Argon2), server-issued JWTs. No OAuth.
 - **Retention** — auto-prune by age / per-device count / total size, with an admin
   settings page.
+- **Ignore rules** — a reversible filter (OR of AND-conditions on a drive's miles /
+  minutes) to hide trivial/junk drives from the list and Stats; nothing is deleted.
 - **Easy onboarding** — a served `onboard.sh` repoints a device in one command;
   unpaired devices are then claimed with a click.
 

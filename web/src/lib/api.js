@@ -118,6 +118,9 @@ export const api = {
   encodingSettings: () => req('GET', '/v1/admin/encoding'),
   setEncoding: (patch) => req('POST', '/v1/admin/encoding', patch),
   reencodeMovies: () => req('POST', '/v1/admin/encoding/reencode'),
+  // drive ignore rules (DNF: OR of AND-conditions on miles/minutes)
+  ignoreRules: () => req('GET', '/v1/admin/ignore-rules'),
+  setIgnoreRules: (rules) => req('POST', '/v1/admin/ignore-rules', { rules }),
   // sync queue counter (drives + files queued/in-flight)
   syncQueue: () => req('GET', '/v1/sync/queue'),
   // movie-encoder queue counter (movies left to build + current label)
