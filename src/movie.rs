@@ -611,23 +611,36 @@ pub async fn sweep(state: &AppState) {
         .map(|(f, c, n, b, d)| ((f, c), (n, b, d)))
         .collect();
 
+    // Per-route coverage in one grouped pass: total segments + how many carry each
+    // camera (replaces a COUNT + 4 cam queries per route). Columns follow
+    // MOVIE_CAMS order: [total, qcam, fcam, dcam, ecam].
+    let coverage: std::collections::HashMap<String, [i64; 5]> =
+        sqlx::query_as::<_, (String, i64, i64, i64, i64, i64)>(
+            "SELECT canonical_route_name, COUNT(*), \
+                    SUM(qcam_url != ''), SUM(fcam_url != ''), \
+                    SUM(dcam_url != ''), SUM(ecam_url != '') \
+             FROM segments GROUP BY canonical_route_name",
+        )
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(f, total, q, fc, d, e)| (f, [total, q, fc, d, e]))
+        .collect();
+
     // First pass: gather every movie that needs (re)building, so the badge can
     // show an accurate remaining count before any slow encode starts.
     let mut todo: Vec<(String, String, String, &'static str)> = Vec::new(); // (fullname, dongle, ts, cam)
     for (fullname, dongle) in routes {
         let Some((_, ts)) = fullname.split_once('|') else { continue };
         let ts = ts.to_string();
-        // Total segments in the route (one COUNT, reused for every camera).
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segments WHERE canonical_route_name = ?")
-            .bind(&fullname)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(0);
+        let Some(cov) = coverage.get(&fullname) else { continue };
+        let total = cov[0];
         if total == 0 {
             continue;
         }
-        for cam in MOVIE_CAMS {
-            let with = segments_with_cam(state, &fullname, cam).await.map(|v| v.len() as i64).unwrap_or(0);
+        for (ci, cam) in MOVIE_CAMS.into_iter().enumerate() {
+            let with = cov[ci + 1];
             // Only build when the camera fully covers the drive (no missing segs).
             if with == 0 || with != total {
                 continue;

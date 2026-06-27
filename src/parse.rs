@@ -42,7 +42,7 @@ struct Coord {
 struct Telem {
     t: f64,       // seconds since onroad start
     speed: f32,   // mph
-    gear: String, // park/drive/reverse/neutral/...
+    gear: &'static str, // park/drive/reverse/neutral/... (gear_name is &'static)
     lb: bool,     // left blinker
     rb: bool,     // right blinker
     brake: bool,  // brake pressed
@@ -644,7 +644,7 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
             // (avoids a 1-sample disengage flicker at each segment boundary).
             if acc.seen_selfdrive && mono >= acc.last_telem_mono.saturating_add(250_000_000) {
                 acc.last_telem_mono = mono;
-                let gear = cs.get_gear_shifter().map(gear_name).unwrap_or("unknown").to_string();
+                let gear = cs.get_gear_shifter().map(gear_name).unwrap_or("unknown");
                 let cruise = cs.get_cruise_state().map(|c| c.get_enabled()).unwrap_or(false);
                 acc.telemetry.push(Telem {
                     t,
