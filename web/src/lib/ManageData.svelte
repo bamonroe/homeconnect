@@ -1,18 +1,10 @@
 <script>
   import { api } from './api.js';
+  import { TYPE_LABELS } from './format.js';
 
   let { route, onclose, onchanged } = $props();
 
   const [dongle, ts] = route.fullname.split('|');
-
-  const TYPE_LABELS = {
-    qcamera: 'Road (qcamera)',
-    fcamera: 'Road HD (fcamera)',
-    dcamera: 'Driver (dcamera)',
-    ecamera: 'Wide (ecamera)',
-    rlog: 'Raw log (rlog)',
-    qlog: 'Driving log (qlog)',
-  };
 
   // All data types, with whether each is already on the server. Cameras + rlog
   // can be pulled from the device; qlog is always synced (the route needs it).

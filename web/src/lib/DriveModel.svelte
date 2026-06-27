@@ -1,6 +1,7 @@
 <script>
   // Top-down "what openpilot saw": path (colored by predicted speed), lane lines,
   // road edges, lead car — from modelV2 (device frame: x fwd, y right, z down).
+  import { speedColor, findNearest } from './format.js';
   let { frames = [], curT = 0 } = $props();
 
   const W = 280, H = 360;
@@ -12,10 +13,6 @@
   const sx = (y) => cx + y * (H / fwd); // device +y is right → screen right
 
   function setFwd(v) { fwd = v; localStorage.setItem('hc_td_fwd', String(v)); }
-  function speedColor(mph) {
-    const t = Math.max(0, Math.min(1, mph / 70));
-    return `hsl(${Math.round(210 - 90 * t)}, 80%, 55%)`;
-  }
   const polyD = (xy) => {
     if (!xy?.x) return '';
     let d = '';
@@ -23,12 +20,7 @@
     return d;
   };
 
-  let frame = $derived.by(() => {
-    if (!frames.length) return null;
-    let lo = 0, hi = frames.length - 1, best = 0;
-    while (lo <= hi) { const m = (lo + hi) >> 1; if (frames[m].t <= curT) { best = m; lo = m + 1; } else hi = m - 1; }
-    return frames[best];
-  });
+  let frame = $derived(findNearest(frames, curT));
 
   // Path as speed-colored segments.
   let pathSegs = $derived.by(() => {

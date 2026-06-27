@@ -1,10 +1,16 @@
 <script>
+  // The single-drive view: video playback (a stitched movie when ready, else HLS
+  // with a separately-synced audio track over the muted full-res cams), a live GPS
+  // marker + telemetry HUD driven off the video clock, and the optional model
+  // overlay / top-down / graph panes (movable + resizable, layout persisted). All
+  // {t,…} series are video-relative seconds; findNearest maps the clock to a sample.
   import { onMount, onDestroy } from 'svelte';
   // maplibre-gl (~250 KB) and hls.js (~150 KB) are loaded on demand in onMount so
   // the Login/Drives views don't pull them; assigned to these once imported.
   let maplibregl;
   let Hls;
   import { api, getToken } from './api.js';
+  import { findNearest } from './format.js';
   import ManageData from './ManageData.svelte';
   import DriveGraph from './DriveGraph.svelte';
   import DriveModel from './DriveModel.svelte';
@@ -301,16 +307,7 @@
   }
 
   // Telemetry sample nearest the current playback time (binary search).
-  function telemAt(t) {
-    if (!telemetry.length) return null;
-    let lo = 0, hi = telemetry.length - 1, best = 0;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (telemetry[mid].t <= t) { best = mid; lo = mid + 1; }
-      else hi = mid - 1;
-    }
-    return telemetry[best];
-  }
+  const telemAt = (t) => findNearest(telemetry, t);
 
   function drawPath() {
     if (!map || coords.length < 2) return;
@@ -352,13 +349,7 @@
     curT = t;
     tnow = telemAt(t);
     if (!marker || !coords.length) return;
-    let lo = 0, hi = coords.length - 1, best = 0;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (coords[mid].t <= t) { best = mid; lo = mid + 1; }
-      else hi = mid - 1;
-    }
-    const c = coords[best];
+    const c = findNearest(coords, t);
     marker.setLngLat([c.lng, c.lat]);
   }
 

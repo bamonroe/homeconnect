@@ -3,14 +3,9 @@
   // (device frame: x fwd, y right, z down) to qcamera pixels via the calibrated
   // intrinsics + per-drive rpy, then onto the displayed (object-fit:contain) frame.
   // The camera geometry is fixed, so one saved calibration works for every drive.
+  import { speedColor, findNearest } from './format.js';
   let { frames = [], rpy = [0, 0, 0], curT = 0, calib = null, fisheye = false, nw = 526, nh = 330 } = $props();
   let canvas;
-
-  // speed → color (blue slow → green fast), tunable alpha.
-  function speedColor(mph, a = 1) {
-    const t = Math.max(0, Math.min(1, mph / 70));
-    return `hsla(${Math.round(210 - 90 * t)}, 80%, 55%, ${a})`;
-  }
 
   // device_from_calib rotation (Rz(yaw)·Ry(pitch)·Rx(roll)); rpy + saved offsets.
   function rot(r, p, y) {
@@ -22,12 +17,7 @@
     ];
   }
 
-  let frame = $derived.by(() => {
-    if (!frames.length) return null;
-    let lo = 0, hi = frames.length - 1, best = 0;
-    while (lo <= hi) { const m = (lo + hi) >> 1; if (frames[m].t <= curT) { best = m; lo = m + 1; } else hi = m - 1; }
-    return frames[best];
-  });
+  let frame = $derived(findNearest(frames, curT));
 
   function draw() {
     const cv = canvas;

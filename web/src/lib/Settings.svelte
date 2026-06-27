@@ -1,5 +1,6 @@
 <script>
   import { api } from './api.js';
+  import { TYPE_LABELS } from './format.js';
 
   let cfg = $state(null);
   let error = $state('');
@@ -10,14 +11,6 @@
   let encode = $state(null); // { enabled, interval_secs }
   let ignoreRules = $state([]); // [{ conditions: [{field, op, value}] }]
   let ignoreMsg = $state('');
-
-  const TYPE_LABELS = {
-    qcamera: 'Road (qcamera)',
-    fcamera: 'Road HD (fcamera)',
-    dcamera: 'Driver (dcamera)',
-    ecamera: 'Wide (ecamera)',
-    rlog: 'Raw log (rlog)',
-  };
 
   async function load() {
     error = '';

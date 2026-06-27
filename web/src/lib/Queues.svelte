@@ -2,6 +2,7 @@
   // Live view of background work: movies waiting to encode + drives/files waiting
   // to sync. Polls the same counters the header badges use, plus their item lists.
   import { api } from './api.js';
+  import { fileLabel } from './format.js';
 
   let enc = $state({ building: 0, current: null, queued: [] });
   let sync = $state({ drives: 0, files: 0, items: [] });
@@ -13,16 +14,10 @@
       try { sync = await api.syncQueue(); } catch {}
     };
     tick();
-    const id = setInterval(() => { if (!stop) tick(); }, 2000);
+    // Poll at 3s to match App.svelte's badge poll (same two endpoints).
+    const id = setInterval(() => { if (!stop) tick(); }, 3000);
     return () => { stop = true; clearInterval(id); };
   });
-
-  const FILE_LABELS = {
-    'qcamera.ts': 'Road', 'fcamera.hevc': 'Road HD', 'dcamera.hevc': 'Driver',
-    'ecamera.hevc': 'Wide', 'qlog.zst': 'Log', 'qlog.bz2': 'Log',
-    'rlog.zst': 'Raw log', 'rlog.bz2': 'Raw log',
-  };
-  const fileLabel = (f) => FILE_LABELS[f] ?? f;
 </script>
 
 <div class="queues">
