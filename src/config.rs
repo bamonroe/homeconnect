@@ -42,6 +42,11 @@ pub struct Config {
     /// interval (seconds). Both have runtime toggles in Settings that seed from these.
     pub movie_enabled: bool,
     pub movie_interval_secs: u64,
+    /// Coordination/login server for the `--tailscale` option of onboard.sh
+    /// (e.g. a self-hosted headscale URL). Empty = Tailscale's default coordination
+    /// server. Not a secret (a public hostname); the per-device authkey is passed
+    /// as a runtime flag, never baked into the script.
+    pub tailnet_login_server: String,
 }
 
 impl Config {
@@ -67,6 +72,7 @@ impl Config {
             device_autoprune: env_or("HC_DEVICE_AUTOPRUNE", "false").parse().unwrap_or(false),
             movie_enabled: env_or("HC_MOVIE_ENABLED", "true").parse().unwrap_or(true),
             movie_interval_secs: env_or("HC_MOVIE_INTERVAL_SECS", "120").parse().unwrap_or(120),
+            tailnet_login_server: trim_trailing_slash(env_or("HC_TAILNET_LOGIN_SERVER", "")),
         }
     }
 

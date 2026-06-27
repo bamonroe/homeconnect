@@ -11,6 +11,7 @@ async fn onboard_script_is_templated_and_public() {
     let mut config = Config::from_env();
     config.data_dir = tmp.path().to_path_buf();
     config.public_url = "http://hc.bam".into();
+    config.tailnet_login_server = "https://headscale.example.com".into();
     let state = homeconnect::build_state(config).await.unwrap();
     let app = homeconnect::router(state);
 
@@ -28,4 +29,12 @@ async fn onboard_script_is_templated_and_public() {
     assert!(s.contains("API_HOST=") && s.contains("ATHENA_HOST=") && s.contains("MAPS_HOST="));
     assert!(s.contains("DongleId"), "clears cached dongle");
     assert!(!s.contains("__HC_HOST__"), "placeholder substituted");
+
+    // Tailscale option: flag handling + login-server templated in, no leftover
+    // placeholders, and crucially no authkey baked into the public script.
+    assert!(s.contains("--tailscale"), "tailscale option present");
+    assert!(s.contains("--authkey"), "registers with an authkey at runtime");
+    assert!(s.contains("TS_LOGIN=\"https://headscale.example.com\""), "login server baked in");
+    assert!(!s.contains("__HC_TS_LOGIN__") && !s.contains("__HC_TS_VERSION__"), "ts placeholders substituted");
+    assert!(!s.contains("tskey-"), "no authkey baked into the public script");
 }

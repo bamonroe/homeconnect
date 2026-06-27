@@ -83,7 +83,7 @@ macros).
 | `api/v2.rs` | `pilotauth` (register), `pilotpair` |
 | `api/settings.rs` | admin: retention, transcode-device, drive-sync (toggle/interval/types/autoprune), movie-encoding (toggle/interval/quality + re-encode-all), road-camera calibration (`cam-calib`), drive `ignore-rules` — GET/POST + retention run-now |
 | `api/manage.rs` | per-route download (streamed stored zip) + delete selected types off the server and/or the device (`target`) |
-| `api/onboard.rs` | serves the host-templated `onboard.sh` (repoint + device-scoped SSH key) |
+| `api/onboard.rs` | serves the host-templated `onboard.sh` (repoint + device-scoped SSH key). Optional `--tailscale <authkey>` installs the tailscale static binaries (arm64), registers once with the authkey, writes a persistent `up.sh`/`boot.sh` (no authkey stored) and adds a `# homeconnect-tailscale` boot line to `continue.sh`. Login server templated from `HC_TAILNET_LOGIN_SERVER` (headscale); the authkey is a runtime arg, never baked into the public script |
 | `api/devsync.rs` | `POST /v1/devices/{d}/sync` — manual SSH-pull trigger (`?full=&route=`); `/v1/sync/queue` stats; `GET/POST /v1/route/{fullname}/sync` per-drive type override |
 | `device_ssh.rs` | homeconnect's device-scoped ed25519 keypair; `run` (command) + `pull_file` (scp) over key-only SSH to `comma@<last_addr>` |
 | `device_params.rs` | curated allowlist of openpilot params; read/validated-write over SSH (`is_writable`); local write-through cache (`device_params` table): edits are instant + offline, flushed on connect |

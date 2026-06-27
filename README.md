@@ -124,6 +124,18 @@ reboots and registers, **Claim** it in the UI. (A device-signed pairing token vi
 `pilotpair` is also supported.) Drives then sync automatically over SSH, or via
 **Sync now** in the UI.
 
+To also put the device on your tailnet, pass `--tailscale <authkey>` (and, if you
+self-host, set `HC_TAILNET_LOGIN_SERVER` so the script targets your coordination
+server). It downloads the tailscale client, registers once with the key, and brings
+the tunnel up on every boot:
+
+```sh
+ssh comma@<device-ip> 'curl -fsSL http://hc.bam/onboard.sh | bash -s -- --tailscale <authkey> --reboot'
+```
+
+The authkey is only used to register; it is never stored on the device or baked
+into the (publicly served) script.
+
 ## Configuration
 
 All via env (`.env` for secrets):
