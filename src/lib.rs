@@ -68,7 +68,13 @@ pub fn router(state: AppState) -> Router {
         // local user auth
         .route("/v1/auth/login", post(api::users::login))
         .route("/v1/me", get(api::users::me))
-        .route("/v1/admin/users", post(api::users::create_user))
+        .route("/v1/me/password", post(api::users::change_my_password))
+        .route("/v1/admin/users", get(api::users::list_users).post(api::users::create_user))
+        .route(
+            "/v1/admin/users/{identity}",
+            post(api::users::update_user).delete(api::users::delete_user),
+        )
+        .route("/v1/admin/users/{identity}/password", post(api::users::admin_set_password))
         // device registration + pairing
         .route("/v2/pilotauth", post(api::v2::pilotauth))
         .route("/v2/pilotpair", post(api::v2::pilotpair))

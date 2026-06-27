@@ -7,11 +7,12 @@
   import DeviceSettings from './lib/DeviceSettings.svelte';
   import Stats from './lib/Stats.svelte';
   import Queues from './lib/Queues.svelte';
+  import Account from './lib/Account.svelte';
 
   let token = $state(getToken());
   let user = $state(getUser());
   let selected = $state(null); // { route }
-  let view = $state('drives'); // 'drives' | 'settings' | 'device'
+  let view = $state('drives'); // 'drives' | 'stats' | 'queues' | 'account' | 'device' | 'settings'
 
   // A `?pair=<token>` in the URL (e.g. scanned device QR) pairs once logged in.
   let pendingPair = new URLSearchParams(location.search).get('pair');
@@ -91,7 +92,7 @@
           <button class="ghost" class:active={view === 'device'} onclick={() => (view = 'device')}>Device</button>
           <button class="ghost" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
         {/if}
-        <span class="muted">{user?.username ?? ''}</span>
+        <button class="ghost" class:active={view === 'account'} title="Account & users" onclick={() => (view = 'account')}>{user?.username ?? 'Account'}</button>
         <button class="ghost" onclick={logout}>Log out</button>
       </div>
     {/if}
@@ -110,6 +111,8 @@
       <Stats />
     {:else if view === 'queues'}
       <Queues />
+    {:else if view === 'account'}
+      <Account />
     {:else if selected}
       {#key selected.route.fullname}
         <Drive route={selected.route} onback={() => (selected = null)} />

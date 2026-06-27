@@ -66,6 +66,17 @@ async function form(path, fields) {
 export const api = {
   login: (username, password) => req('POST', '/v1/auth/login', { username, password }),
   me: () => req('GET', '/v1/me'),
+
+  // User management (admin) + self password change.
+  changeMyPassword: (current_password, new_password) =>
+    req('POST', '/v1/me/password', { current_password, new_password }),
+  listUsers: () => req('GET', '/v1/admin/users'),
+  createUser: (username, password, email, is_admin) =>
+    req('POST', '/v1/admin/users', { username, password, email, is_admin }),
+  updateUser: (id, patch) => req('POST', `/v1/admin/users/${id}`, patch),
+  deleteUser: (id) => req('DELETE', `/v1/admin/users/${id}`),
+  setUserPassword: (id, password) => req('POST', `/v1/admin/users/${id}/password`, { password }),
+
   devices: () => req('GET', '/v1/me/devices'),
   myStats: () => req('GET', '/v1/me/stats'),
   myPaths: () => req('GET', '/v1/me/paths'),
