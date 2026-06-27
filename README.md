@@ -94,7 +94,7 @@ the built SPA, and ffmpeg.
 ```sh
 # 1. Set a secret (any random base64). Kept out of git and the image.
 echo "HC_JWT_SECRET=$(head -c 32 /dev/urandom | base64)" >  .env
-echo "HC_PUBLIC_URL=http://homeconnect.bam"               >> .env   # how device+browser reach you
+echo "HC_PUBLIC_URL=http://hc.bam"                         >> .env   # how device+browser reach you
 
 # 2. Build and run (data persists in the mounted volume).
 docker compose build
@@ -114,7 +114,7 @@ to wherever you want SQLite + blobs to live, and put a reverse proxy
 In the SPA, **+ Add device** shows a one-liner to run on the comma (or over SSH):
 
 ```sh
-ssh comma@<device-ip> 'curl -fsSL http://homeconnect.bam/onboard.sh | bash -s -- --reboot'
+ssh comma@<device-ip> 'curl -fsSL http://hc.bam/onboard.sh | bash -s -- --reboot'
 ```
 
 `onboard.sh` repoints openpilot at this server (patching `/data/continue.sh`,

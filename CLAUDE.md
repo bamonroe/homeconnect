@@ -232,7 +232,9 @@ and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
 
 ## Live deployment notes (this instance)
 
-- Served at `http://homeconnect.bam` via Caddy → `127.0.0.1:8099`.
+- Served at `http://hc.bam` via Caddy → `127.0.0.1:8099` (the old
+  `homeconnect.bam` is kept as a Caddy alias until the paired comma's
+  `continue.sh` is repointed at `hc.bam`, then it can be dropped).
 - The real comma (dongle `296b3ca364aef806`, ES256 key) is cut over; SSH is
   `comma@<device-ip>` with `~/.ssh/bazzite_ed25519`; its `/data/continue.sh`
   exports `API_HOST/ATHENA_HOST/MAPS_HOST` (Konik backup at `continue.sh.konik`).

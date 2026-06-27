@@ -1,6 +1,6 @@
 //! Serves a device-onboarding shell script with this server's URL + SSH public
 //! key baked in. Run it on the comma (directly or over SSH):
-//!   curl -fsSL http://homeconnect.bam/onboard.sh | bash
+//!   curl -fsSL http://hc.bam/onboard.sh | bash
 //! It repoints openpilot at homeconnect, installs homeconnect's device-scoped
 //! SSH key (for device management — NOT a GitHub key), and forces
 //! re-registration; the user then claims the device in the UI.

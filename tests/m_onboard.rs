@@ -10,7 +10,7 @@ async fn onboard_script_is_templated_and_public() {
     let tmp = tempfile::tempdir().unwrap();
     let mut config = Config::from_env();
     config.data_dir = tmp.path().to_path_buf();
-    config.public_url = "http://homeconnect.bam".into();
+    config.public_url = "http://hc.bam".into();
     let state = homeconnect::build_state(config).await.unwrap();
     let app = homeconnect::router(state);
 
@@ -24,7 +24,7 @@ async fn onboard_script_is_templated_and_public() {
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let s = String::from_utf8_lossy(&body);
     assert!(s.starts_with("#!/usr/bin/env bash"));
-    assert!(s.contains("HOST=\"http://homeconnect.bam\""), "host baked in");
+    assert!(s.contains("HOST=\"http://hc.bam\""), "host baked in");
     assert!(s.contains("API_HOST=") && s.contains("ATHENA_HOST=") && s.contains("MAPS_HOST="));
     assert!(s.contains("DongleId"), "clears cached dongle");
     assert!(!s.contains("__HC_HOST__"), "placeholder substituted");

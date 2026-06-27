@@ -5,7 +5,7 @@
 #   docker compose logs -f       # tail logs
 #
 # Data (SQLite + blobs + transcode cache) lives on the bulk disk; the port is
-# bound to localhost for Caddy (homeconnect.bam) to reverse-proxy. Runs as the
+# bound to localhost for Caddy (hc.bam) to reverse-proxy. Runs as the
 # host user so data files stay owned by you. Secrets come from .env.
 #
 # Distinct project name keeps this isolated from the dev compose (which also has
