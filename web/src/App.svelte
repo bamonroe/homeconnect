@@ -13,6 +13,7 @@
   let user = $state(getUser());
   let selected = $state(null); // { route }
   let view = $state('drives'); // 'drives' | 'stats' | 'queues' | 'account' | 'device' | 'settings'
+  let menuOpen = $state(false); // mobile nav dropdown
 
   // A `?pair=<token>` in the URL (e.g. scanned device QR) pairs once logged in.
   let pendingPair = new URLSearchParams(location.search).get('pair');
@@ -60,10 +61,17 @@
     user = null;
     selected = null;
     view = 'drives';
+    menuOpen = false;
   }
   function goDrives() {
     selected = null;
     view = 'drives';
+    menuOpen = false;
+  }
+  // Switch view and close the mobile menu.
+  function navTo(v) {
+    view = v;
+    menuOpen = false;
   }
 </script>
 
@@ -72,7 +80,7 @@
     <div class="brand">home<span>connect</span></div>
     {#if token}
       <div class="right">
-        <button class="syncing" class:active={queue.files > 0} class:sel={view === 'queues'} title="Drive sync status — click for the queue" onclick={() => (view = 'queues')}>
+        <button class="syncing" class:active={queue.files > 0} class:sel={view === 'queues'} title="Drive sync status — click for the queue" onclick={() => navTo('queues')}>
           {#if queue.files > 0}
             <span class="spin">⟳</span>
             {queue.drives} drive{queue.drives === 1 ? '' : 's'} · {queue.files} file{queue.files === 1 ? '' : 's'}
@@ -81,20 +89,24 @@
           {/if}
         </button>
         {#if enc.building > 0}
-          <button class="syncing active" class:sel={view === 'queues'} title={enc.current ? `Encoding ${enc.current} — click for the queue` : 'Encoding movies'} onclick={() => (view = 'queues')}>
+          <button class="syncing active" class:sel={view === 'queues'} title={enc.current ? `Encoding ${enc.current} — click for the queue` : 'Encoding movies'} onclick={() => navTo('queues')}>
             <span class="spin">⟳</span>
             Encoding {enc.building} movie{enc.building === 1 ? '' : 's'}
           </button>
         {/if}
-        <button class="ghost" class:active={view === 'drives'} onclick={goDrives}>Drives</button>
-        <button class="ghost" class:active={view === 'stats'} onclick={() => (view = 'stats')}>Stats</button>
-        {#if user?.is_admin}
-          <button class="ghost" class:active={view === 'device'} onclick={() => (view = 'device')}>Device</button>
-          <button class="ghost" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
-        {/if}
-        <button class="ghost" class:active={view === 'account'} title="Account & users" onclick={() => (view = 'account')}>{user?.username ?? 'Account'}</button>
-        <button class="ghost" onclick={logout}>Log out</button>
+        <button class="menu-toggle ghost" aria-label="Menu" aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}>☰</button>
+        <nav class="nav" class:open={menuOpen}>
+          <button class="ghost" class:active={view === 'drives'} onclick={goDrives}>Drives</button>
+          <button class="ghost" class:active={view === 'stats'} onclick={() => navTo('stats')}>Stats</button>
+          {#if user?.is_admin}
+            <button class="ghost" class:active={view === 'device'} onclick={() => navTo('device')}>Device</button>
+            <button class="ghost" class:active={view === 'settings'} onclick={() => navTo('settings')}>Settings</button>
+          {/if}
+          <button class="ghost" class:active={view === 'account'} title="Account & users" onclick={() => navTo('account')}>{user?.username ?? 'Account'}</button>
+          <button class="ghost" onclick={logout}>Log out</button>
+        </nav>
       </div>
+      {#if menuOpen}<button class="backdrop" aria-label="Close menu" onclick={() => (menuOpen = false)}></button>{/if}
     {/if}
   </header>
 
@@ -126,13 +138,18 @@
 <style>
   .layout { display: flex; flex-direction: column; height: 100%; }
   header {
+    position: relative;
     display: flex; align-items: center; justify-content: space-between;
     padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--panel);
   }
   .brand { font-weight: 700; font-size: 18px; }
   .brand span { color: var(--accent); }
   .right { display: flex; align-items: center; gap: 12px; }
+  .nav { display: flex; align-items: center; gap: 12px; }
   .right .active { border-color: var(--accent); color: var(--text); }
+  /* The hamburger is desktop-hidden; the nav shows inline. */
+  .menu-toggle { display: none; font-size: 18px; line-height: 1; padding: 6px 10px; }
+  .backdrop { display: none; }
   .syncing { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
     border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
     background: none; cursor: pointer; font-family: inherit; }
@@ -144,4 +161,22 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   main { flex: 1; min-height: 0; overflow: auto; }
   .banner { background: var(--accent); color: #fff; padding: 8px 16px; font-size: 13px; }
+
+  /* Mobile: collapse the nav buttons behind a hamburger; keep the sync badge. */
+  @media (max-width: 640px) {
+    header { padding: 10px 14px; }
+    .right { gap: 8px; }
+    .menu-toggle { display: inline-flex; }
+    .nav {
+      display: none;
+      position: absolute; top: 100%; right: 8px; z-index: 6;
+      flex-direction: column; align-items: stretch; gap: 6px;
+      min-width: 180px; padding: 8px;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    }
+    .nav.open { display: flex; }
+    .nav button { width: 100%; text-align: left; padding: 10px 12px; }
+    .backdrop { display: block; position: fixed; inset: 0; z-index: 5; background: transparent; border: 0; }
+  }
 </style>
