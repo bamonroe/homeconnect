@@ -67,13 +67,7 @@ struct Reg {
 /// when unset. The manual `POST /sync` endpoint ignores this — it's an explicit
 /// user action.
 pub async fn is_enabled(state: &AppState) -> bool {
-    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(ENABLED_KEY)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
-    match v {
+    match crate::settings::get(state, ENABLED_KEY).await {
         Some(s) => s == "1" || s.eq_ignore_ascii_case("true"),
         None => state.config.sync_enabled,
     }
@@ -81,19 +75,13 @@ pub async fn is_enabled(state: &AppState) -> bool {
 
 /// Set the runtime on/off toggle.
 pub async fn set_enabled(state: &AppState, on: bool) -> AppResult<()> {
-    put_setting(state, ENABLED_KEY, if on { "1" } else { "0" }).await
+    crate::settings::set(state, ENABLED_KEY, if on { "1" } else { "0" }).await
 }
 
 /// The periodic loop interval in seconds (0 = loop off). Runtime setting,
 /// falling back to `HC_SYNC_INTERVAL_SECS` when unset.
 pub async fn get_interval(state: &AppState) -> u64 {
-    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(INTERVAL_KEY)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
-    match v {
+    match crate::settings::get(state, INTERVAL_KEY).await {
         Some(s) => s.parse().unwrap_or(state.config.sync_interval_secs),
         None => state.config.sync_interval_secs,
     }
@@ -101,20 +89,14 @@ pub async fn get_interval(state: &AppState) -> u64 {
 
 /// Set the loop interval (seconds; 0 disables the loop).
 pub async fn set_interval(state: &AppState, secs: u64) -> AppResult<()> {
-    put_setting(state, INTERVAL_KEY, &secs.to_string()).await
+    crate::settings::set(state, INTERVAL_KEY, &secs.to_string()).await
 }
 
 /// Is auto-prune on? When set, a file's device copy is deleted right after it's
 /// safely pulled + stored (reclaims device space; only ever deletes what we hold).
 /// Runtime setting, falling back to `HC_DEVICE_AUTOPRUNE` (default off).
 pub async fn is_autoprune_enabled(state: &AppState) -> bool {
-    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(AUTOPRUNE_KEY)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
-    match v {
+    match crate::settings::get(state, AUTOPRUNE_KEY).await {
         Some(s) => s == "1" || s.eq_ignore_ascii_case("true"),
         None => state.config.device_autoprune,
     }
@@ -122,7 +104,7 @@ pub async fn is_autoprune_enabled(state: &AppState) -> bool {
 
 /// Set the auto-prune toggle.
 pub async fn set_autoprune(state: &AppState, on: bool) -> AppResult<()> {
-    put_setting(state, AUTOPRUNE_KEY, if on { "1" } else { "0" }).await
+    crate::settings::set(state, AUTOPRUNE_KEY, if on { "1" } else { "0" }).await
 }
 
 /// Every selectable data type (full set), for the "Pull full-res" / sync-all path.
@@ -133,13 +115,7 @@ pub fn all_types() -> Vec<String> {
 /// The default set of data types automatic sync pulls. Runtime setting; falls
 /// back to `HC_SYNC_FULLRES` (all types) vs just `qcamera` when unset.
 pub async fn get_sync_types(state: &AppState) -> Vec<String> {
-    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(TYPES_KEY)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
-    match v {
+    match crate::settings::get(state, TYPES_KEY).await {
         Some(s) => s.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect(),
         None if state.config.sync_fullres => all_types(),
         None => vec!["qcamera".to_string()],
@@ -148,7 +124,7 @@ pub async fn get_sync_types(state: &AppState) -> Vec<String> {
 
 /// Set the default sync types (unknown tokens are dropped; order normalised).
 pub async fn set_sync_types(state: &AppState, types: &[String]) -> AppResult<()> {
-    put_setting(state, TYPES_KEY, &clean_types(types).join(",")).await
+    crate::settings::set(state, TYPES_KEY, &clean_types(types).join(",")).await
 }
 
 /// Normalise a requested type list to the known optional types (order preserved).
@@ -221,18 +197,6 @@ async fn load_route_overrides(
             Some((ts, ov))
         })
         .collect())
-}
-
-async fn put_setting(state: &AppState, key: &str, value: &str) -> AppResult<()> {
-    sqlx::query(
-        "INSERT INTO settings (key, value) VALUES (?, ?) \
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    )
-    .bind(key)
-    .bind(value)
-    .execute(&state.pool)
-    .await?;
-    Ok(())
 }
 
 /// Spawn the pool of background workers that drain the sync queue. Each pulls (or

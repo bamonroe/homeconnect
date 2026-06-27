@@ -25,13 +25,7 @@ const DEVICE_KEY: &str = "transcode_device";
 /// The encoder/decoder device the admin has selected at runtime, falling back to
 /// the `HC_VAAPI_DEVICE` env default. `None` = CPU (libx264).
 pub async fn current_device(state: &AppState) -> Option<String> {
-    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(DEVICE_KEY)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
-    match v {
+    match crate::settings::get(state, DEVICE_KEY).await {
         Some(s) if s == "cpu" => None,
         Some(s) if !s.is_empty() => Some(s),
         _ => state.config.vaapi_device.clone(),
@@ -40,12 +34,7 @@ pub async fn current_device(state: &AppState) -> Option<String> {
 
 /// Persist the selected transcode device ("cpu" or a `/dev/dri/renderD*` path).
 pub async fn set_device(state: &AppState, value: &str) -> AppResult<()> {
-    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(DEVICE_KEY)
-        .bind(value)
-        .execute(&state.pool)
-        .await?;
-    Ok(())
+    crate::settings::set(state, DEVICE_KEY, value).await
 }
 
 #[derive(Serialize, Clone)]

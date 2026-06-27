@@ -22,6 +22,7 @@ pub mod movie;
 pub mod parse;
 pub mod retention;
 pub mod serve;
+pub mod settings;
 pub mod state;
 pub mod storage;
 pub mod sync_queue;

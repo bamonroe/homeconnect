@@ -110,13 +110,7 @@ fn cam_label(cam: &str) -> &'static str {
 /// Is background movie encoding enabled? Runtime toggle in the settings table,
 /// falling back to `HC_MOVIE_ENABLED` (default on) when unset.
 pub async fn is_enabled(state: &AppState) -> bool {
-    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(ENABLED_KEY)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
-    match v {
+    match crate::settings::get(state, ENABLED_KEY).await {
         Some(s) => s == "1" || s.eq_ignore_ascii_case("true"),
         None => state.config.movie_enabled,
     }
@@ -124,19 +118,13 @@ pub async fn is_enabled(state: &AppState) -> bool {
 
 /// Set the runtime on/off toggle.
 pub async fn set_enabled(state: &AppState, on: bool) -> AppResult<()> {
-    put_setting(state, ENABLED_KEY, if on { "1" } else { "0" }).await
+    crate::settings::set(state, ENABLED_KEY, if on { "1" } else { "0" }).await
 }
 
 /// The sweep interval in seconds. Runtime setting, falling back to
 /// `HC_MOVIE_INTERVAL_SECS` (default 120) when unset.
 pub async fn get_interval(state: &AppState) -> u64 {
-    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(INTERVAL_KEY)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
-    match v {
+    match crate::settings::get(state, INTERVAL_KEY).await {
         Some(s) => s.parse().unwrap_or(state.config.movie_interval_secs),
         None => state.config.movie_interval_secs,
     }
@@ -144,28 +132,7 @@ pub async fn get_interval(state: &AppState) -> u64 {
 
 /// Set the sweep interval (seconds).
 pub async fn set_interval(state: &AppState, secs: u64) -> AppResult<()> {
-    put_setting(state, INTERVAL_KEY, &secs.to_string()).await
-}
-
-async fn put_setting(state: &AppState, key: &str, value: &str) -> AppResult<()> {
-    sqlx::query(
-        "INSERT INTO settings (key, value) VALUES (?, ?) \
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    )
-    .bind(key)
-    .bind(value)
-    .execute(&state.pool)
-    .await?;
-    Ok(())
-}
-
-async fn get_setting(state: &AppState, key: &str) -> Option<String> {
-    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(key)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten()
+    crate::settings::set(state, INTERVAL_KEY, &secs.to_string()).await
 }
 
 /// settings keys for how movies are encoded.
@@ -194,19 +161,19 @@ fn scale_for(token: &str) -> Option<(u32, u32)> {
 }
 
 pub async fn encode_opts(state: &AppState) -> EncodeOpts {
-    let scale = scale_for(get_setting(state, SCALE_KEY).await.as_deref().unwrap_or("native"));
-    let crf = get_setting(state, CRF_KEY)
+    let scale = scale_for(crate::settings::get(state, SCALE_KEY).await.as_deref().unwrap_or("native"));
+    let crf = crate::settings::get(state, CRF_KEY)
         .await
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(23)
         .clamp(16, 35);
-    let preset = get_setting(state, PRESET_KEY).await.unwrap_or_else(|| "veryfast".into());
+    let preset = crate::settings::get(state, PRESET_KEY).await.unwrap_or_else(|| "veryfast".into());
     EncodeOpts { scale, crf, preset }
 }
 
 /// Current encode settings as JSON (for the Settings UI), plus the choices.
 pub async fn encode_settings_json(state: &AppState) -> Value {
-    let scale_tok = get_setting(state, SCALE_KEY).await.unwrap_or_else(|| "native".into());
+    let scale_tok = crate::settings::get(state, SCALE_KEY).await.unwrap_or_else(|| "native".into());
     let o = encode_opts(state).await;
     json!({
         "scale": scale_tok,
@@ -228,17 +195,17 @@ pub async fn set_encode_settings(
         if !["native", "854", "640"].contains(&s) {
             return Err(AppError::BadRequest("bad scale".into()));
         }
-        put_setting(state, SCALE_KEY, s).await?;
+        crate::settings::set(state, SCALE_KEY, s).await?;
     }
     if let Some(c) = crf {
-        put_setting(state, CRF_KEY, &c.clamp(16, 35).to_string()).await?;
+        crate::settings::set(state, CRF_KEY, &c.clamp(16, 35).to_string()).await?;
     }
     if let Some(p) = preset {
         let allowed = ["ultrafast", "veryfast", "faster", "fast", "medium", "slow"];
         if !allowed.contains(&p) {
             return Err(AppError::BadRequest("bad preset".into()));
         }
-        put_setting(state, PRESET_KEY, p).await?;
+        crate::settings::set(state, PRESET_KEY, p).await?;
     }
     Ok(())
 }

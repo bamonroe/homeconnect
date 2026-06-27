@@ -34,13 +34,7 @@ pub struct Rule {
 
 /// Load the saved rules (empty if unset/invalid).
 pub async fn load_rules(state: &AppState) -> Vec<Rule> {
-    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(KEY)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
-    match v {
+    match crate::settings::get(state, KEY).await {
         // Configured (possibly `[]` = filtering off) → use it.
         Some(s) => serde_json::from_str::<Vec<Rule>>(&s).unwrap_or_default(),
         // Never configured → the default rule.
@@ -50,13 +44,7 @@ pub async fn load_rules(state: &AppState) -> Vec<Rule> {
 
 /// The raw JSON value (for the settings GET) — the default rule if never configured.
 pub async fn rules_json(state: &AppState) -> Value {
-    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(KEY)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
-    match v {
+    match crate::settings::get(state, KEY).await {
         Some(s) => serde_json::from_str::<Value>(&s).unwrap_or_else(|_| Value::Array(vec![])),
         None => serde_json::from_str::<Value>(DEFAULT_RULES_JSON).unwrap_or_else(|_| Value::Array(vec![])),
     }
@@ -88,12 +76,7 @@ pub async fn save_rules(state: &AppState, rules: &[Rule]) -> AppResult<()> {
             .collect::<Vec<_>>(),
     )
     .unwrap_or_else(|_| "[]".into());
-    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(KEY)
-        .bind(json)
-        .execute(&state.pool)
-        .await?;
-    Ok(())
+    crate::settings::set(state, KEY, &json).await
 }
 
 fn cond_matches(c: &Condition, miles: f64, minutes: f64) -> bool {

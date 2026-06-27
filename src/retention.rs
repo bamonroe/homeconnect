@@ -29,32 +29,16 @@ pub struct Policy {
 
 /// Load the effective policy: settings-table overrides on top of config defaults.
 pub async fn load_policy(state: &AppState) -> Policy {
-    let get = |k: &'static str| async move {
-        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-            .bind(k)
-            .fetch_optional(&state.pool)
-            .await
-            .ok()
-            .flatten()
-    };
-    let days = get("retain_days").await.and_then(|v| v.parse().ok()).unwrap_or(state.config.retain_days);
-    let max_drives = get("retain_max_drives").await.and_then(|v| v.parse().ok()).unwrap_or(state.config.retain_max_drives);
-    let max_gb = get("retain_gb").await.and_then(|v| v.parse().ok()).unwrap_or(state.config.retain_gb);
+    let days = crate::settings::get(state, "retain_days").await.and_then(|v| v.parse().ok()).unwrap_or(state.config.retain_days);
+    let max_drives = crate::settings::get(state, "retain_max_drives").await.and_then(|v| v.parse().ok()).unwrap_or(state.config.retain_max_drives);
+    let max_gb = crate::settings::get(state, "retain_gb").await.and_then(|v| v.parse().ok()).unwrap_or(state.config.retain_gb);
     Policy { days, max_drives, max_gb }
 }
 
 pub async fn save_policy(state: &AppState, p: &Policy) -> AppResult<()> {
-    for (k, v) in [
-        ("retain_days", p.days.to_string()),
-        ("retain_max_drives", p.max_drives.to_string()),
-        ("retain_gb", p.max_gb.to_string()),
-    ] {
-        sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-            .bind(k)
-            .bind(v)
-            .execute(&state.pool)
-            .await?;
-    }
+    crate::settings::set(state, "retain_days", &p.days.to_string()).await?;
+    crate::settings::set(state, "retain_max_drives", &p.max_drives.to_string()).await?;
+    crate::settings::set(state, "retain_gb", &p.max_gb.to_string()).await?;
     Ok(())
 }
 

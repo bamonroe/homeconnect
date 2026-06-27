@@ -215,11 +215,7 @@ pub async fn get_cam_calib(
     AuthUser(user): AuthUser,
 ) -> AppResult<Json<Value>> {
     require_admin(&user)?;
-    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'cam_calib'")
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
+    let v = crate::settings::get(&state, "cam_calib").await;
     // Per-camera calibration. `h` = camera height above the road (m), added to the
     // path/lead z so they sit on the road. qcamera/fcamera pinhole; ecamera fisheye
     // (equidistant). qcamera is a uniform downscale of the 1928x1208 sensor (f 2648).
@@ -255,13 +251,7 @@ pub async fn set_cam_calib(
 ) -> AppResult<Json<Value>> {
     require_admin(&user)?;
     let s = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
-    sqlx::query(
-        "INSERT INTO settings (key, value) VALUES ('cam_calib', ?) \
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    )
-    .bind(s)
-    .execute(&state.pool)
-    .await?;
+    crate::settings::set(&state, "cam_calib", &s).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
