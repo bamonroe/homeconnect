@@ -1,7 +1,8 @@
 <script>
   import { api } from './api.js';
-  import maplibregl from 'maplibre-gl';
-  import 'maplibre-gl/dist/maplibre-gl.css';
+  // maplibre-gl (~250 KB) is loaded on demand when the map is first drawn, so
+  // the rest of the Stats view paints without pulling it.
+  let maplibregl;
 
   let s = $state(null);
   let error = $state('');
@@ -28,6 +29,16 @@
   $effect(() => {
     if (mapDone || !mapEl || !paths || !paths.length) return;
     mapDone = true;
+    drawMap();
+  });
+
+  async function drawMap() {
+    if (!maplibregl) {
+      [maplibregl] = await Promise.all([
+        import('maplibre-gl').then((m) => m.default),
+        import('maplibre-gl/dist/maplibre-gl.css'),
+      ]);
+    }
     const map = new maplibregl.Map({ container: mapEl, style: STYLE, center: [0, 0], zoom: 1 });
     const features = paths.map((p) => ({ type: 'Feature', properties: { autonomy: p.autonomy }, geometry: { type: 'LineString', coordinates: p.coords } }));
     let minx = 180, miny = 90, maxx = -180, maxy = -90;
@@ -43,7 +54,7 @@
       });
       if (maxx >= minx) map.fitBounds([[minx, miny], [maxx, maxy]], { padding: 30, duration: 0 });
     });
-  });
+  }
 
   const n0 = (x) => Math.round(x).toLocaleString();
   const n1 = (x) => (Math.round(x * 10) / 10).toLocaleString();

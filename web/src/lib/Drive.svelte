@@ -1,8 +1,9 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import maplibregl from 'maplibre-gl';
-  import 'maplibre-gl/dist/maplibre-gl.css';
-  import Hls from 'hls.js';
+  // maplibre-gl (~250 KB) and hls.js (~150 KB) are loaded on demand in onMount so
+  // the Login/Drives views don't pull them; assigned to these once imported.
+  let maplibregl;
+  let Hls;
   import { api, getToken } from './api.js';
   import ManageData from './ManageData.svelte';
   import DriveGraph from './DriveGraph.svelte';
@@ -489,6 +490,12 @@
     // Restore persisted overlay/top-down state (their toggles didn't run).
     if (showModel || showOverlay) loadModel();
     if (showOverlay) loadCalib();
+    // Pull the heavy map/video libs now (first use is below, all awaited).
+    [maplibregl, Hls] = await Promise.all([
+      import('maplibre-gl').then((m) => m.default),
+      import('hls.js').then((m) => m.default),
+      import('maplibre-gl/dist/maplibre-gl.css'),
+    ]);
     map = new maplibregl.Map({ container: mapEl, style: STYLE, center: [0, 0], zoom: 1 });
     map.on('load', () => { mapReady = true; map.resize(); maybeDraw(); });
     videoEl.addEventListener('timeupdate', () => syncMarker(videoEl.currentTime));
