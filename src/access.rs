@@ -1,9 +1,38 @@
 //! Shared authorization helpers for browse/serve endpoints.
 
 use crate::auth::Auth;
-use crate::error::AppResult;
-use crate::models::Device;
+use crate::error::{AppError, AppResult};
+use crate::models::{Device, User};
 use crate::state::AppState;
+
+/// May this user *manage* (view + control) the device? Owner, admin, or a
+/// shared user (`authorized_users`). The single authorization check for the
+/// owner-facing device endpoints (params, model, sync, manage data, routes).
+pub async fn can_manage_loaded(state: &AppState, user: &User, device: &Device) -> AppResult<bool> {
+    if user.is_admin != 0 || device.owner_id == Some(user.id) {
+        return Ok(true);
+    }
+    let shared: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1 FROM authorized_users WHERE user_id = ? AND device_dongle_id = ?",
+    )
+    .bind(user.id)
+    .bind(&device.dongle_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    Ok(shared.is_some())
+}
+
+/// Load the device and require the user can manage it; returns the device.
+pub async fn can_manage_device(state: &AppState, user: &User, dongle: &str) -> AppResult<Device> {
+    let device = load_device(state, dongle)
+        .await?
+        .ok_or_else(|| AppError::NotFound("unknown device".into()))?;
+    if can_manage_loaded(state, user, &device).await? {
+        Ok(device)
+    } else {
+        Err(AppError::Forbidden("not authorized for device".into()))
+    }
+}
 
 /// May this principal view the given device's data? True for the device itself,
 /// its owner, or a user it's been shared with (authorized_users).

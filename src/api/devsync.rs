@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::auth::AuthUser;
 use crate::devsync::{self, SyncOpts};
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -30,12 +30,7 @@ pub async fn sync_now(
     AuthUser(user): AuthUser,
     Query(q): Query<SyncQuery>,
 ) -> AppResult<Json<Value>> {
-    let device = crate::access::load_device(&state, &dongle)
-        .await?
-        .ok_or_else(|| AppError::NotFound("unknown device".into()))?;
-    if user.is_admin == 0 && device.owner_id != Some(user.id) {
-        return Err(AppError::Forbidden("not your device".into()));
-    }
+    let device = crate::access::can_manage_device(&state, &user, &dongle).await?;
 
     // Precedence: explicit `types` > `full` (all) > per-route resolution (None).
     let fullres = matches!(q.full.as_deref(), Some("1" | "true" | "yes"));
@@ -78,18 +73,10 @@ pub async fn queue_stats(
     Ok(Json(json!({ "drives": drives, "files": files, "items": items })))
 }
 
-/// Authorize a per-route action: the caller owns the route's device (or is admin).
+/// Authorize a per-route action: the caller can manage the route's device.
 async fn authorize_route(state: &AppState, user: &crate::models::User, fullname: &str) -> AppResult<()> {
-    let dongle = fullname
-        .split_once('|')
-        .map(|(d, _)| d)
-        .ok_or_else(|| AppError::BadRequest("bad route name".into()))?;
-    let device = crate::access::load_device(state, dongle)
-        .await?
-        .ok_or_else(|| AppError::NotFound("unknown device".into()))?;
-    if user.is_admin == 0 && device.owner_id != Some(user.id) {
-        return Err(AppError::Forbidden("not your device".into()));
-    }
+    let (dongle, _) = crate::storage::split_fullname(fullname)?;
+    crate::access::can_manage_device(state, user, dongle).await?;
     Ok(())
 }
 

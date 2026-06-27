@@ -6,21 +6,11 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
+use crate::access::can_manage_device;
 use crate::auth::AuthUser;
 use crate::device_params;
 use crate::error::{AppError, AppResult};
-use crate::models::{Device, User};
 use crate::state::AppState;
-
-async fn authorize_device(state: &AppState, user: &User, dongle: &str) -> AppResult<Device> {
-    let device = crate::access::load_device(state, dongle)
-        .await?
-        .ok_or_else(|| AppError::NotFound("unknown device".into()))?;
-    if user.is_admin == 0 && device.owner_id != Some(user.id) {
-        return Err(AppError::Forbidden("not your device".into()));
-    }
-    Ok(device)
-}
 
 fn specs_json() -> Vec<Value> {
     device_params::SPECS
@@ -56,7 +46,7 @@ pub async fn get_params(
     Path(dongle): Path<String>,
     AuthUser(user): AuthUser,
 ) -> AppResult<Json<Value>> {
-    let device = authorize_device(&state, &user, &dongle).await?;
+    let device = can_manage_device(&state, &user, &dongle).await?;
     let online = device.online == 1 && !device.last_addr.is_empty();
 
     // One-time bootstrap: if we've never cached this device, read it now.
@@ -96,7 +86,7 @@ pub async fn set_param(
     AuthUser(user): AuthUser,
     Json(req): Json<SetParam>,
 ) -> AppResult<Json<Value>> {
-    let device = authorize_device(&state, &user, &dongle).await?;
+    let device = can_manage_device(&state, &user, &dongle).await?;
     if !device_params::is_writable(&req.key, &req.value) {
         return Err(AppError::BadRequest("not an editable setting, or invalid value".into()));
     }
@@ -122,7 +112,7 @@ pub async fn get_model(
     Path(dongle): Path<String>,
     AuthUser(user): AuthUser,
 ) -> AppResult<Json<Value>> {
-    let device = authorize_device(&state, &user, &dongle).await?;
+    let device = can_manage_device(&state, &user, &dongle).await?;
     if device.online == 0 || device.last_addr.is_empty() {
         return Ok(Json(json!({ "online": false })));
     }
@@ -144,7 +134,7 @@ pub async fn set_model(
     AuthUser(user): AuthUser,
     Json(req): Json<SetModel>,
 ) -> AppResult<Json<Value>> {
-    let device = authorize_device(&state, &user, &dongle).await?;
+    let device = can_manage_device(&state, &user, &dongle).await?;
     if device.online == 0 || device.last_addr.is_empty() {
         return Err(AppError::BadRequest("device must be online to change the model".into()));
     }

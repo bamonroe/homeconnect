@@ -11,11 +11,11 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use tokio_util::io::ReaderStream;
 
+use crate::access::can_manage_device;
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
-use crate::models::User;
 use crate::state::AppState;
-use crate::storage::blob_key;
+use crate::storage::{blob_key, split_fullname};
 
 /// Map a selectable type to (candidate filenames, segment URL column).
 fn type_spec(t: &str) -> Option<(&'static [&'static str], &'static str)> {
@@ -28,34 +28,6 @@ fn type_spec(t: &str) -> Option<(&'static [&'static str], &'static str)> {
         "rlog" => Some((&["rlog.zst", "rlog.bz2"], "rlog_url")),
         _ => None,
     }
-}
-
-async fn require_owner(state: &AppState, user: &User, dongle: &str) -> AppResult<()> {
-    let device = crate::access::load_device(state, dongle)
-        .await?
-        .ok_or_else(|| AppError::NotFound("unknown device".into()))?;
-    if device.owner_id == Some(user.id) {
-        return Ok(());
-    }
-    let shared: Option<(i64,)> = sqlx::query_as(
-        "SELECT 1 FROM authorized_users WHERE user_id = ? AND device_dongle_id = ?",
-    )
-    .bind(user.id)
-    .bind(dongle)
-    .fetch_optional(&state.pool)
-    .await?;
-    if shared.is_some() {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden("not authorized for device".into()))
-    }
-}
-
-fn split_full(fullname: &str) -> AppResult<(String, String)> {
-    fullname
-        .split_once('|')
-        .map(|(d, t)| (d.to_string(), t.to_string()))
-        .ok_or_else(|| AppError::BadRequest("bad route name".into()))
 }
 
 async fn segment_numbers(state: &AppState, fullname: &str) -> AppResult<Vec<i64>> {
@@ -105,11 +77,11 @@ pub async fn download(
     AuthUser(user): AuthUser,
     Query(q): Query<DownloadQuery>,
 ) -> AppResult<Response> {
-    let (dongle, ts) = split_full(&fullname)?;
-    require_owner(&state, &user, &dongle).await?;
+    let (dongle, ts) = split_fullname(&fullname)?;
+    can_manage_device(&state, &user, dongle).await?;
     let types: Vec<String> = q.types.split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
     let segs = segment_numbers(&state, &fullname).await?;
-    let files = collect_files(&state, &dongle, &ts, &segs, &types).await;
+    let files = collect_files(&state, dongle, ts, &segs, &types).await;
     if files.is_empty() {
         return Err(AppError::NotFound("no matching files".into()));
     }
@@ -174,8 +146,8 @@ pub async fn delete(
     AuthUser(user): AuthUser,
     Json(req): Json<DeleteReq>,
 ) -> AppResult<Json<Value>> {
-    let (dongle, ts) = split_full(&fullname)?;
-    require_owner(&state, &user, &dongle).await?;
+    let (dongle, ts) = split_fullname(&fullname)?;
+    can_manage_device(&state, &user, dongle).await?;
     let segs = segment_numbers(&state, &fullname).await?;
 
     let target = req.target.as_deref().unwrap_or("server");
@@ -188,7 +160,7 @@ pub async fn delete(
     // --- Device delete (SSH): remove the selected types' files from the comma. ---
     let mut device_removed = 0usize;
     if do_device {
-        let device = crate::access::load_device(&state, &dongle)
+        let device = crate::access::load_device(&state, dongle)
             .await?
             .ok_or_else(|| AppError::NotFound("unknown device".into()))?;
         let mut files: Vec<(i64, String)> = Vec::new();
@@ -200,7 +172,7 @@ pub async fn delete(
                 }
             }
         }
-        device_removed = crate::devsync::delete_on_device(&state, &device, &ts, &files).await?;
+        device_removed = crate::devsync::delete_on_device(&state, &device, ts, &files).await?;
     }
 
     // --- Server delete: blobs + stale transcode caches, then re-aggregate. ---
@@ -211,14 +183,14 @@ pub async fn delete(
             for t in &req.types {
                 let Some((names, col)) = type_spec(t) else { continue };
                 for name in names {
-                    let key = blob_key(&dongle, &ts, seg, name);
+                    let key = blob_key(dongle, ts, seg, name);
                     if let Some(sz) = state.blobs.size(&key).await {
                         let _ = state.blobs.delete(&key).await;
                         removed += 1;
                         freed += sz;
                     }
                 }
-                clear_segment_col(&state, &dongle, &ts, seg, col).await;
+                clear_segment_col(&state, dongle, ts, seg, col).await;
                 // Camera transcode caches become stale once the source is gone.
                 for cam in ["fcamera", "dcamera", "ecamera"] {
                     if t == cam {
@@ -229,13 +201,13 @@ pub async fn delete(
             }
         }
 
-        crate::parse::recompute_route(&state, &dongle, &ts).await?;
+        crate::parse::recompute_route(&state, dongle, ts).await?;
 
         // A camera's stitched movie is built from its segments; drop it when those
         // are deleted so a stale movie isn't served (the sweep rebuilds if re-pulled).
         for t in &req.types {
             if crate::movie::MOVIE_CAMS.contains(&t.as_str()) {
-                crate::movie::delete(&state, &dongle, &ts, t).await;
+                crate::movie::delete(&state, dongle, ts, t).await;
             }
         }
 

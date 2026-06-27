@@ -497,7 +497,7 @@ pub async fn routes_segments(
     Query(q): Query<RoutesQuery>,
 ) -> AppResult<Json<Value>> {
     let device = load_device(&state, &dongle).await?;
-    if !user_owns(&state, &user, &device).await? {
+    if !crate::access::can_manage_loaded(&state, &user, &device).await? {
         return Err(AppError::Forbidden("not authorized for device".into()));
     }
 
@@ -563,13 +563,9 @@ pub async fn camera_m3u8(
     let stem = cam
         .strip_suffix(".m3u8")
         .ok_or_else(|| AppError::BadRequest("expected <camera>.m3u8".into()))?;
-    let dongle = fullname
-        .split_once('|')
-        .map(|(d, _)| d.to_string())
-        .ok_or_else(|| AppError::BadRequest("bad route name".into()))?;
-    let ts = fullname.split_once('|').map(|(_, t)| t.to_string()).unwrap_or_default();
-    let device = load_device(&state, &dongle).await?;
-    if !user_owns(&state, &user, &device).await? {
+    let (dongle, ts) = crate::storage::split_fullname(&fullname)?;
+    let device = load_device(&state, dongle).await?;
+    if !crate::access::can_manage_loaded(&state, &user, &device).await? {
         return Err(AppError::Forbidden("not authorized for device".into()));
     }
 
@@ -654,12 +650,9 @@ pub async fn route_movies(
     Path(fullname): Path<String>,
     AuthUser(user): AuthUser,
 ) -> AppResult<Json<Value>> {
-    let dongle = fullname
-        .split_once('|')
-        .map(|(d, _)| d.to_string())
-        .ok_or_else(|| AppError::BadRequest("bad route name".into()))?;
-    let device = load_device(&state, &dongle).await?;
-    if !user_owns(&state, &user, &device).await? {
+    let (dongle, _) = crate::storage::split_fullname(&fullname)?;
+    let device = load_device(&state, dongle).await?;
+    if !crate::access::can_manage_loaded(&state, &user, &device).await? {
         return Err(AppError::Forbidden("not authorized for device".into()));
     }
     Ok(Json(json!({ "movies": crate::movie::status(&state, &fullname).await })))
@@ -679,13 +672,9 @@ pub async fn route_movie_action(
     AuthUser(user): AuthUser,
     Json(req): Json<MovieActionReq>,
 ) -> AppResult<Json<Value>> {
-    let dongle = fullname
-        .split_once('|')
-        .map(|(d, _)| d.to_string())
-        .ok_or_else(|| AppError::BadRequest("bad route name".into()))?;
-    let ts = fullname.split_once('|').map(|(_, t)| t.to_string()).unwrap_or_default();
-    let device = load_device(&state, &dongle).await?;
-    if !user_owns(&state, &user, &device).await? {
+    let (dongle, ts) = crate::storage::split_fullname(&fullname)?;
+    let device = load_device(&state, dongle).await?;
+    if !crate::access::can_manage_loaded(&state, &user, &device).await? {
         return Err(AppError::Forbidden("not authorized for device".into()));
     }
     let stem = cam.strip_suffix(".mp4").unwrap_or(&cam);
@@ -693,9 +682,9 @@ pub async fn route_movie_action(
         return Err(AppError::BadRequest("unknown camera".into()));
     }
     match req.action.as_str() {
-        "delete" => crate::movie::disable(&state, &dongle, &ts, stem).await,
+        "delete" => crate::movie::disable(&state, dongle, ts, stem).await,
         "rebuild" => {
-            crate::movie::delete(&state, &dongle, &ts, stem).await;
+            crate::movie::delete(&state, dongle, ts, stem).await;
             state.movie_queue.request_sweep();
         }
         _ => return Err(AppError::BadRequest("action must be delete or rebuild".into())),
@@ -759,19 +748,4 @@ pub async fn claim_device(
         .await?;
     tracing::info!(%dongle, user = %user.username, "device claimed");
     Ok(Json(json!({ "dongle_id": dongle, "first_pair": true })))
-}
-
-/// Does this user own (or share) the device?
-async fn user_owns(state: &AppState, user: &User, device: &Device) -> AppResult<bool> {
-    if device.owner_id == Some(user.id) {
-        return Ok(true);
-    }
-    let shared: Option<(i64,)> = sqlx::query_as(
-        "SELECT 1 FROM authorized_users WHERE user_id = ? AND device_dongle_id = ?",
-    )
-    .bind(user.id)
-    .bind(&device.dongle_id)
-    .fetch_optional(&state.pool)
-    .await?;
-    Ok(shared.is_some())
 }

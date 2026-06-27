@@ -79,6 +79,13 @@ pub fn blob_key(dongle: &str, timestamp: &str, segment: i64, file: &str) -> Stri
     format!("{dongle}_{timestamp}--{segment}--{file}")
 }
 
+/// Split a route `fullname` (`{dongle}|{ts}`) into `(dongle, ts)`.
+pub fn split_fullname(fullname: &str) -> crate::error::AppResult<(&str, &str)> {
+    fullname
+        .split_once('|')
+        .ok_or_else(|| crate::error::AppError::BadRequest("bad route name".into()))
+}
+
 /// Replace path-hostile characters so the key is safe as a single filename.
 fn sanitize(key: &str) -> String {
     key.chars()

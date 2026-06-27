@@ -15,6 +15,29 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::storage::blob_key;
 
+/// Route-serve authorization: a public route is open to anyone; otherwise the
+/// caller must be logged in and pass the device-view rules. Shared by every
+/// blob/transcode/audio/movie handler.
+async fn check_route_access(
+    state: &AppState,
+    fullname: &str,
+    dongle: &str,
+    auth: Option<Auth>,
+) -> AppResult<()> {
+    let is_public: Option<(i64,)> = sqlx::query_as("SELECT is_public FROM routes WHERE fullname = ?")
+        .bind(fullname)
+        .fetch_optional(&state.pool)
+        .await?;
+    if matches!(is_public, Some((1,))) {
+        return Ok(());
+    }
+    let auth = auth.ok_or_else(|| AppError::Unauthorized("login required".into()))?;
+    if !access::can_view_route(state, &auth, dongle).await? {
+        return Err(AppError::Forbidden("not authorized for this route".into()));
+    }
+    Ok(())
+}
+
 fn content_type(file: &str) -> &'static str {
     let lower = file.to_ascii_lowercase();
     if lower.ends_with(".ts") {
@@ -94,20 +117,8 @@ async fn serve_blob(
     auth: Option<Auth>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    // Authorization: public route → open; else device-view rules.
     let fullname = format!("{dongle}|{timestamp}");
-    let is_public: Option<(i64,)> =
-        sqlx::query_as("SELECT is_public FROM routes WHERE fullname = ?")
-            .bind(&fullname)
-            .fetch_optional(&state.pool)
-            .await?;
-    let public = matches!(is_public, Some((1,)));
-    if !public {
-        let auth = auth.ok_or_else(|| AppError::Unauthorized("login required".into()))?;
-        if !access::can_view_route(&state, &auth, &dongle).await? {
-            return Err(AppError::Forbidden("not authorized for this route".into()));
-        }
-    }
+    check_route_access(&state, &fullname, &dongle, auth).await?;
 
     let key = blob_key(&dongle, &timestamp, segment, &file);
     let path = state.blobs.path_for(&key);
@@ -124,17 +135,7 @@ pub async fn transcode(
 ) -> AppResult<Response> {
     // Same auth as blob serving.
     let fullname = format!("{dongle}|{timestamp}");
-    let is_public: Option<(i64,)> =
-        sqlx::query_as("SELECT is_public FROM routes WHERE fullname = ?")
-            .bind(&fullname)
-            .fetch_optional(&state.pool)
-            .await?;
-    if !matches!(is_public, Some((1,))) {
-        let auth = auth.ok_or_else(|| AppError::Unauthorized("login required".into()))?;
-        if !crate::access::can_view_route(&state, &auth, &dongle).await? {
-            return Err(AppError::Forbidden("not authorized for this route".into()));
-        }
-    }
+    check_route_access(&state, &fullname, &dongle, auth).await?;
 
     let cam = file.strip_suffix(".ts").unwrap_or(&file);
     let path = crate::transcode::ensure_transcode(&state, &dongle, &timestamp, segment, cam).await?;
@@ -149,17 +150,7 @@ pub async fn audio(
     headers: HeaderMap,
 ) -> AppResult<Response> {
     let fullname = format!("{dongle}|{timestamp}");
-    let is_public: Option<(i64,)> =
-        sqlx::query_as("SELECT is_public FROM routes WHERE fullname = ?")
-            .bind(&fullname)
-            .fetch_optional(&state.pool)
-            .await?;
-    if !matches!(is_public, Some((1,))) {
-        let auth = auth.ok_or_else(|| AppError::Unauthorized("login required".into()))?;
-        if !crate::access::can_view_route(&state, &auth, &dongle).await? {
-            return Err(AppError::Forbidden("not authorized for this route".into()));
-        }
-    }
+    check_route_access(&state, &fullname, &dongle, auth).await?;
     let path = crate::transcode::ensure_audio(&state, &dongle, &timestamp, segment).await?;
     serve_file(&path, "video/mp2t", &headers).await
 }
@@ -173,20 +164,8 @@ pub async fn movie(
     auth: Option<Auth>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    let (dongle, timestamp) = fullname
-        .split_once('|')
-        .ok_or_else(|| AppError::BadRequest("bad route name".into()))?;
-
-    let is_public: Option<(i64,)> = sqlx::query_as("SELECT is_public FROM routes WHERE fullname = ?")
-        .bind(&fullname)
-        .fetch_optional(&state.pool)
-        .await?;
-    if !matches!(is_public, Some((1,))) {
-        let auth = auth.ok_or_else(|| AppError::Unauthorized("login required".into()))?;
-        if !access::can_view_route(&state, &auth, dongle).await? {
-            return Err(AppError::Forbidden("not authorized for this route".into()));
-        }
-    }
+    let (dongle, timestamp) = crate::storage::split_fullname(&fullname)?;
+    check_route_access(&state, &fullname, dongle, auth).await?;
 
     let stem = cam.strip_suffix(".mp4").unwrap_or(&cam);
     if !crate::movie::MOVIE_CAMS.contains(&stem) {
