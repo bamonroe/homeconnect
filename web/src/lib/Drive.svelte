@@ -725,12 +725,19 @@
 <style>
   .drive { display: flex; flex-direction: column; height: 100%; }
   .bar {
-    display: flex; align-items: center; gap: 14px; padding: 10px 16px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 10px 16px;
     border-bottom: 1px solid var(--border); background: var(--panel);
   }
   .bar .title { font-weight: 600; }
   .bar .pullfull { margin-left: auto; }
   .bar .manage { margin-left: auto; }
+  /* On narrow screens let the action buttons wrap to a new line instead of
+     spilling off the page; don't force them to the right edge. */
+  @media (max-width: 640px) {
+    .bar { gap: 8px; padding: 8px 12px; }
+    .bar .title { font-size: 13px; }
+    .bar .pullfull, .bar .manage { margin-left: 0; }
+  }
   .pad { padding: 10px 16px; }
   .calib { padding: 8px 16px; display: grid; gap: 6px; border-bottom: 1px solid var(--border); }
   .crow { display: grid; grid-template-columns: 70px 1fr 46px; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
