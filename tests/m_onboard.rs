@@ -16,6 +16,7 @@ async fn onboard_script_is_templated_and_public() {
     let app = homeconnect::router(state);
 
     let resp = app
+        .clone()
         .oneshot(Request::builder().uri("/onboard.sh").body(Body::empty()).unwrap())
         .await
         .unwrap();
@@ -37,4 +38,11 @@ async fn onboard_script_is_templated_and_public() {
     assert!(s.contains("TS_LOGIN=\"https://headscale.example.com\""), "login server baked in");
     assert!(!s.contains("__HC_TS_LOGIN__") && !s.contains("__HC_TS_VERSION__"), "ts placeholders substituted");
     assert!(!s.contains("tskey-"), "no authkey baked into the public script");
+
+    // The command-builder defaults endpoint requires a logged-in user.
+    let resp = app
+        .oneshot(Request::builder().uri("/v1/onboard/defaults").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "defaults endpoint needs auth");
 }

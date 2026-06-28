@@ -65,6 +65,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/onboard.sh", get(api::onboard::onboard_script))
+        .route("/v1/onboard/defaults", get(api::onboard::onboard_defaults))
         // local user auth
         .route("/v1/auth/login", post(api::users::login))
         .route("/v1/me", get(api::users::me))

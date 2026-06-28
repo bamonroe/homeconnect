@@ -12,7 +12,10 @@
 use axum::extract::State;
 use axum::http::header;
 use axum::response::IntoResponse;
+use axum::Json;
+use serde_json::{json, Value};
 
+use crate::auth::AuthUser;
 use crate::device_ssh;
 use crate::state::AppState;
 
@@ -190,4 +193,17 @@ pub async fn onboard_script(State(state): State<AppState>) -> impl IntoResponse 
         [(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")],
         body,
     )
+}
+
+/// GET /v1/onboard/defaults — values the "Add device" command builder prefills
+/// (the configured tailnet login server + the default tailscale version). Any
+/// logged-in user; no secrets here.
+pub async fn onboard_defaults(
+    State(state): State<AppState>,
+    AuthUser(_user): AuthUser,
+) -> Json<Value> {
+    Json(json!({
+        "login_server": state.config.tailnet_login_server,
+        "ts_version": TS_VERSION,
+    }))
 }

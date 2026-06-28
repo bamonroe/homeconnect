@@ -10,7 +10,41 @@
   let busy = $state(false);
   let copied = $state(false);
 
-  const onboardCmd = `ssh comma@<device-ip> 'curl -fsSL ${location.origin}/onboard.sh | bash -s -- --reboot'`;
+  // --- onboard command builder ---
+  let ip = $state('');
+  let useSsh = $state(true);
+  let reboot = $state(true);
+  let tsOn = $state(false);
+  let authkey = $state('');
+  let loginServer = $state('');
+  let tsHostname = $state('');
+  let tsVersion = $state('');
+  let tsVersionDefault = $state('');
+
+  // Prefill the tailnet login server + version default from the server config.
+  $effect(() => {
+    api.onboardDefaults()
+      .then((d) => { loginServer = d.login_server || ''; tsVersionDefault = d.ts_version || ''; })
+      .catch(() => {});
+  });
+
+  // The flags appended after `bash -s --`, from the form.
+  let flags = $derived.by(() => {
+    const f = [];
+    if (tsOn && authkey.trim()) f.push(`--tailscale ${authkey.trim()}`);
+    if (tsOn && loginServer.trim()) f.push(`--ts-login-server ${loginServer.trim()}`);
+    if (tsOn && tsHostname.trim()) f.push(`--ts-hostname ${tsHostname.trim()}`);
+    if (tsOn && tsVersion.trim()) f.push(`--ts-version ${tsVersion.trim()}`);
+    if (reboot) f.push('--reboot');
+    return f.join(' ');
+  });
+  let inner = $derived(`curl -fsSL ${location.origin}/onboard.sh | bash -s --${flags ? ' ' + flags : ''}`);
+  let onboardCmd = $derived(
+    useSsh ? `ssh comma@${ip.trim() || '<device-ip>'} '${inner}'` : inner
+  );
+  // The authkey is only missing piece that makes the command incomplete.
+  let needsKey = $derived(tsOn && !authkey.trim());
+
   async function copyCmd() {
     try {
       await navigator.clipboard.writeText(onboardCmd);
@@ -75,13 +109,43 @@
     <section>
       <h3>Point a new device here</h3>
       <p class="muted small">
-        Run this on the comma (or over SSH). It repoints the device at this server and lets it
-        register; then claim it below.
+        Fill in the options and copy the command. It repoints the device at this server and lets
+        it register; then claim it below.
       </p>
+
+      <div class="opts">
+        <label class="toggle"><input type="checkbox" bind:checked={useSsh} /> Run it over SSH</label>
+        {#if useSsh}
+          <label class="field">Device IP (for SSH)
+            <input bind:value={ip} placeholder="192.168.x.x or tailnet IP" autocomplete="off" />
+          </label>
+        {/if}
+        <label class="toggle"><input type="checkbox" bind:checked={reboot} /> Reboot when done</label>
+        <label class="toggle"><input type="checkbox" bind:checked={tsOn} /> Also join my tailnet (tailscale)</label>
+
+        {#if tsOn}
+          <div class="sub">
+            <label class="field">Auth key <span class="req">required</span>
+              <input bind:value={authkey} placeholder="tskey-auth-… / headscale preauth key" autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="field">Login server
+              <input bind:value={loginServer} placeholder="(Tailscale default if blank)" autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="field">Hostname <span class="muted">(optional)</span>
+              <input bind:value={tsHostname} placeholder="comma-<serial> (auto)" autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="field">Tailscale version <span class="muted">(optional)</span>
+              <input bind:value={tsVersion} placeholder={tsVersionDefault || 'default'} autocomplete="off" spellcheck="false" />
+            </label>
+          </div>
+        {/if}
+      </div>
+
       <div class="cmd">
         <code>{onboardCmd}</code>
-        <button class="ghost" onclick={copyCmd}>{copied ? 'Copied' : 'Copy'}</button>
+        <button class="ghost" onclick={copyCmd} disabled={needsKey}>{copied ? 'Copied' : 'Copy'}</button>
       </div>
+      {#if needsKey}<p class="muted small">Enter an auth key to complete the command.</p>{/if}
       <p class="muted small">The device reboots itself, then registers here in a minute or two — refresh this list and Claim it.</p>
     </section>
 
@@ -145,4 +209,10 @@
   .small { font-size: 12px; }
   .cmd { display: flex; gap: 8px; align-items: center; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
   .cmd code { font-family: ui-monospace, monospace; font-size: 12px; overflow-x: auto; white-space: nowrap; flex: 1; }
+  .opts { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+  .opts .toggle { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 14px; }
+  .opts .toggle input { width: 16px; height: 16px; }
+  .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  .sub { display: flex; flex-direction: column; gap: 10px; padding: 10px; border-left: 2px solid var(--border); margin-left: 6px; }
+  .req { color: #d29922; }
 </style>
