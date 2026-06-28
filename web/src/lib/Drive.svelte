@@ -10,7 +10,7 @@
   let maplibregl;
   let Hls;
   import { api, getToken } from './api.js';
-  import { findNearest } from './format.js';
+  import { findNearest, copyText } from './format.js';
   import ManageData from './ManageData.svelte';
   import DriveGraph from './DriveGraph.svelte';
   import DriveModel from './DriveModel.svelte';
@@ -29,11 +29,10 @@
     return `${location.origin}/?share=${encodeURIComponent(route.fullname)}`;
   }
   async function copyShareLink() {
-    try {
-      await navigator.clipboard.writeText(shareLink());
+    if (await copyText(shareLink())) {
       shareCopied = true;
       setTimeout(() => (shareCopied = false), 1500);
-    } catch {}
+    }
   }
   async function toggleShare() {
     shareErr = '';

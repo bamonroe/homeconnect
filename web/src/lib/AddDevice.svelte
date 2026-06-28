@@ -1,5 +1,6 @@
 <script>
   import { api } from './api.js';
+  import { copyText } from './format.js';
 
   let { onpaired, onclose } = $props();
 
@@ -46,11 +47,10 @@
   let needsKey = $derived(tsOn && !authkey.trim());
 
   async function copyCmd() {
-    try {
-      await navigator.clipboard.writeText(onboardCmd);
+    if (await copyText(onboardCmd)) {
       copied = true;
       setTimeout(() => (copied = false), 1500);
-    } catch {}
+    }
   }
 
   async function load() {

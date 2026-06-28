@@ -27,6 +27,33 @@ const FILE_LABELS = {
 };
 export const fileLabel = (f) => FILE_LABELS[f] ?? f;
 
+// Copy text to the clipboard, returning whether it succeeded. The async
+// Clipboard API only exists in a secure context (HTTPS/localhost); this site is
+// served over plain HTTP on the tailnet, so fall back to a temporary-textarea
+// `execCommand('copy')`, which works over http://.
+export async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 // Binary-search a time-sorted array for the last sample at or before `t`, returning
 // that element (or the first sample if `t` precedes them all, null if empty). Every
 // `{ t, … }` series (coords, telemetry, model frames) is synced to the video clock
