@@ -18,8 +18,6 @@
 
   let { route, onback, readonly = false } = $props();
   let showManage = $state(false);
-  let pulling = $state(false);
-  let pullMsg = $state('');
 
   // Public sharing: toggle the drive's public flag and hand out a login-free link.
   let isPublic = $state(route.is_public ?? false);
@@ -450,24 +448,6 @@
     });
   }
 
-  // Pull this drive's data per the default sync settings (catches anything not
-  // yet synced for this route). Granular per-type pulls live in Manage data.
-  async function syncDrive() {
-    if (pulling) return;
-    pulling = true;
-    pullMsg = '';
-    try {
-      const s = await api.sync(dongle, { route: ts });
-      pullMsg = s.online === false
-        ? 'Device is offline — it’ll sync when it reconnects.'
-        : 'Sync queued — progress shows up top; reopen the drive once it lands.';
-    } catch (e) {
-      pullMsg = `Sync failed: ${e.message}`;
-    } finally {
-      pulling = false;
-    }
-  }
-
   function switchCam(id) {
     const at = videoEl?.currentTime || 0;
     cam = id;
@@ -553,26 +533,23 @@
     <button class="ghost" onclick={onback}>← Drives</button>
     <div class="title">{new Date(route.start_time_utc_millis).toLocaleString()}</div>
     <div class="muted">{route.length ? route.length.toFixed(1) + ' mi' : ''} · {route.platform || ''}</div>
-    {#if !readonly}
-      {#if isPublic}
-        <button class="ghost pullfull" onclick={copyShareLink} title="This drive is shared — anyone with the link can view it">
-          {shareCopied ? '🔗 Link copied' : '🔗 Copy link'}
-        </button>
-        <button class="ghost" onclick={toggleShare} title="Make this drive private again">Stop sharing</button>
-      {:else}
-        <button class="ghost pullfull" onclick={toggleShare} title="Create a public, login-free link to this drive">Share</button>
+    <div class="actions">
+      {#if !readonly}
+        {#if isPublic}
+          <button class="ghost" onclick={copyShareLink} title="This drive is shared — anyone with the link can view it">
+            {shareCopied ? '🔗 Link copied' : '🔗 Copy link'}
+          </button>
+          <button class="ghost" onclick={toggleShare} title="Make this drive private again">Stop sharing</button>
+        {:else}
+          <button class="ghost" onclick={toggleShare} title="Create a public, login-free link to this drive">Share</button>
+        {/if}
+        <button class="ghost" onclick={() => (showManage = true)}>Manage data</button>
       {/if}
-      <button class="ghost" onclick={syncDrive} disabled={pulling}>
-        {pulling ? 'Working…' : 'Sync'}
-      </button>
-      <button class="ghost manage" onclick={() => (showManage = true)}>Manage data</button>
-    {/if}
-    <button class="ghost" onclick={resetLayout} title="Reset the pane layout to default">Reset layout</button>
+      <button class="ghost" onclick={resetLayout} title="Reset the pane layout to default">Reset layout</button>
+    </div>
   </div>
   {#if shareErr}<div class="muted pad error">{shareErr}</div>{/if}
   {#if isPublic && !readonly}<div class="muted pad small">Public link active — anyone with it can view this drive (no login).</div>{/if}
-
-  {#if pullMsg}<div class="muted pad">{pullMsg}</div>{/if}
 
   {#if route.telem_miles > 0}
     <div class="statstrip">
@@ -729,14 +706,13 @@
     border-bottom: 1px solid var(--border); background: var(--panel);
   }
   .bar .title { font-weight: 600; }
-  .bar .pullfull { margin-left: auto; }
-  .bar .manage { margin-left: auto; }
-  /* On narrow screens let the action buttons wrap to a new line instead of
-     spilling off the page; don't force them to the right edge. */
+  .bar .actions { display: flex; align-items: center; gap: 14px; margin-left: auto; }
+  /* On narrow screens drop the whole action group onto its own line under the
+     drive description instead of spilling off the page. */
   @media (max-width: 640px) {
     .bar { gap: 8px; padding: 8px 12px; }
     .bar .title { font-size: 13px; }
-    .bar .pullfull, .bar .manage { margin-left: 0; }
+    .bar .actions { width: 100%; margin-left: 0; gap: 8px; }
   }
   .pad { padding: 10px 16px; }
   .calib { padding: 8px 16px; display: grid; gap: 6px; border-bottom: 1px solid var(--border); }
