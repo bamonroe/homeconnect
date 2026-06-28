@@ -100,6 +100,9 @@ export const api = {
     `/v1/route/${encodeURIComponent(fullname)}/${cam}.m3u8`,
   // Pre-built stitched movies (single MP4 per camera, audio muxed in).
   routeMovies: (fullname) => req('GET', `/v1/route/${encodeURIComponent(fullname)}/movies`),
+  routeInfo: (fullname) => req('GET', `/v1/route/${encodeURIComponent(fullname)}/info`),
+  setRoutePublic: (fullname, isPublic) =>
+    req('POST', `/v1/route/${encodeURIComponent(fullname)}/public`, { public: isPublic }),
   movieUrl: (fullname, cam) =>
     `/v1/route/${encodeURIComponent(fullname)}/movie/${cam}.mp4?sig=${getToken()}`,
   // action: 'delete' (remove + stop auto-rebuild) or 'rebuild' (re-encode now)

@@ -19,6 +19,23 @@
   let pendingPair = new URLSearchParams(location.search).get('pair');
   let banner = $state('');
 
+  // A `?share=<fullname>` link opens one drive read-only, no login required.
+  let shareFullname = $state(new URLSearchParams(location.search).get('share'));
+  let shareRoute = $state(null);
+  let shareErr = $state('');
+  $effect(() => {
+    if (!shareFullname) return;
+    api.routeInfo(shareFullname)
+      .then((r) => { shareRoute = r; })
+      .catch(() => { shareErr = 'This drive isn’t shared (the link may have been turned off).'; });
+  });
+  function exitShare() {
+    shareRoute = null;
+    shareErr = '';
+    shareFullname = null;
+    history.replaceState(null, '', location.pathname);
+  }
+
   // Sync + encoding queue counters, polled while logged in.
   let queue = $state({ drives: 0, files: 0 });
   let enc = $state({ building: 0, current: null });
@@ -107,13 +124,24 @@
         </nav>
       </div>
       {#if menuOpen}<button class="backdrop" aria-label="Close menu" onclick={() => (menuOpen = false)}></button>{/if}
+    {:else if shareFullname}
+      <div class="right"><button class="ghost" onclick={exitShare}>Log in</button></div>
     {/if}
   </header>
 
   {#if banner}<div class="banner">{banner}</div>{/if}
 
   <main>
-    {#if !token}
+    {#if shareRoute}
+      {#key shareRoute.fullname}
+        <Drive route={shareRoute} readonly onback={exitShare} />
+      {/key}
+    {:else if shareErr}
+      <div class="share-msg">
+        <p class="muted">{shareErr}</p>
+        <button class="ghost" onclick={exitShare}>Go to homeconnect</button>
+      </div>
+    {:else if !token}
       <Login {onLogin} />
     {:else if view === 'settings'}
       <Settings />
@@ -161,6 +189,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   main { flex: 1; min-height: 0; overflow: auto; }
   .banner { background: var(--accent); color: #fff; padding: 8px 16px; font-size: 13px; }
+  .share-msg { padding: 40px 18px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 
   /* Mobile: collapse the nav buttons behind a hamburger; keep the sync badge. */
   @media (max-width: 640px) {

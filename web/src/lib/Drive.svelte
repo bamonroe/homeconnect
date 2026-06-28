@@ -16,10 +16,35 @@
   import DriveModel from './DriveModel.svelte';
   import DriveOverlay from './DriveOverlay.svelte';
 
-  let { route, onback } = $props();
+  let { route, onback, readonly = false } = $props();
   let showManage = $state(false);
   let pulling = $state(false);
   let pullMsg = $state('');
+
+  // Public sharing: toggle the drive's public flag and hand out a login-free link.
+  let isPublic = $state(route.is_public ?? false);
+  let shareCopied = $state(false);
+  let shareErr = $state('');
+  function shareLink() {
+    return `${location.origin}/?share=${encodeURIComponent(route.fullname)}`;
+  }
+  async function copyShareLink() {
+    try {
+      await navigator.clipboard.writeText(shareLink());
+      shareCopied = true;
+      setTimeout(() => (shareCopied = false), 1500);
+    } catch {}
+  }
+  async function toggleShare() {
+    shareErr = '';
+    try {
+      const r = await api.setRoutePublic(route.fullname, !isPublic);
+      isPublic = r.is_public;
+      if (isPublic) copyShareLink();
+    } catch (e) {
+      shareErr = e.message;
+    }
+  }
 
   let mapEl;
   let videoEl;
@@ -216,6 +241,9 @@
 
   const [dongle, ts] = route.fullname.split('|');
   const token = getToken();
+  // Public (share-link) viewers have no token; public routes serve media without
+  // a sig, so omit it rather than sending `?sig=null`.
+  const sigQ = token ? `?sig=${token}` : '';
 
   // Minimal OSM raster basemap (configurable later; fine for home use).
   const STYLE = {
@@ -232,7 +260,7 @@
   };
 
   function seg(n, file) {
-    return `/connectdata/${dongle}/${ts}/${n}/${file}?sig=${token}`;
+    return `/connectdata/${dongle}/${ts}/${n}/${file}${sigQ}`;
   }
 
   async function fetchJson(url) {
@@ -290,6 +318,9 @@
   let overlayOk = $derived(showOverlay && OVERLAY_CAMS.includes(cam) && modelFrames.length > 0 && !!camCalib);
   async function loadCalib() {
     if (calib) return;
+    // Public viewers can't read the admin calibration; fall back to defaults
+    // (good enough for the overlay) instead of a doomed request.
+    if (readonly) { calib = structuredClone(CALIB_DEFAULTS); return; }
     try { calib = await api.camCalib(); } catch { calib = structuredClone(CALIB_DEFAULTS); }
   }
   async function toggleOverlay() {
@@ -369,7 +400,7 @@
     movieMode = false;
     videoEl.muted = true; // sound comes from the separate audio track
     videoEl.removeAttribute('src');
-    const url = api.camM3u8(route.fullname, cam) + `?sig=${token}`;
+    const url = api.camM3u8(route.fullname, cam) + sigQ;
     if (hls) {
       hls.destroy();
       hls = null;
@@ -393,7 +424,7 @@
   // muxing audio into them. Continuous timeline matches the video.
   function loadAudio() {
     if (movieMode) return; // movie carries its own audio
-    const url = api.camM3u8(route.fullname, 'audio') + `?sig=${token}`;
+    const url = api.camM3u8(route.fullname, 'audio') + sigQ;
     if (audioHls) { audioHls.destroy(); audioHls = null; }
     if (Hls.isSupported()) {
       audioHls = new Hls({ fragLoadingTimeOut: 90000 });
@@ -523,12 +554,24 @@
     <button class="ghost" onclick={onback}>← Drives</button>
     <div class="title">{new Date(route.start_time_utc_millis).toLocaleString()}</div>
     <div class="muted">{route.length ? route.length.toFixed(1) + ' mi' : ''} · {route.platform || ''}</div>
-    <button class="ghost pullfull" onclick={syncDrive} disabled={pulling}>
-      {pulling ? 'Working…' : 'Sync'}
-    </button>
-    <button class="ghost manage" onclick={() => (showManage = true)}>Manage data</button>
+    {#if !readonly}
+      {#if isPublic}
+        <button class="ghost pullfull" onclick={copyShareLink} title="This drive is shared — anyone with the link can view it">
+          {shareCopied ? '🔗 Link copied' : '🔗 Copy link'}
+        </button>
+        <button class="ghost" onclick={toggleShare} title="Make this drive private again">Stop sharing</button>
+      {:else}
+        <button class="ghost pullfull" onclick={toggleShare} title="Create a public, login-free link to this drive">Share</button>
+      {/if}
+      <button class="ghost" onclick={syncDrive} disabled={pulling}>
+        {pulling ? 'Working…' : 'Sync'}
+      </button>
+      <button class="ghost manage" onclick={() => (showManage = true)}>Manage data</button>
+    {/if}
     <button class="ghost" onclick={resetLayout} title="Reset the pane layout to default">Reset layout</button>
   </div>
+  {#if shareErr}<div class="muted pad error">{shareErr}</div>{/if}
+  {#if isPublic && !readonly}<div class="muted pad small">Public link active — anyone with it can view this drive (no login).</div>{/if}
 
   {#if pullMsg}<div class="muted pad">{pullMsg}</div>{/if}
 
@@ -612,7 +655,7 @@
               {#if movieMode}<span class="moviebadge" title="Playing the stitched HD movie with muxed audio">▶ HD movie</span>{/if}
               <button class="ghost rate" class:active={showModel} onclick={toggleModel} title="Top-down model view (needs full-res rlog)">Top-down</button>
               <button class="ghost rate" class:active={showOverlay} onclick={toggleOverlay} title="Model overlay on the road video">Overlay</button>
-              {#if showOverlay && OVERLAY_CAMS.includes(cam)}
+              {#if showOverlay && OVERLAY_CAMS.includes(cam) && !readonly}
                 <button class="ghost rate" class:active={calibrating} onclick={() => (calibrating = !calibrating)}>Calibrate</button>
               {/if}
               <span class="rates">

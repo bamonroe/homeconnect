@@ -112,6 +112,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices/{dongle_id}/routes_segments", get(api::v1::routes_segments))
         .route("/v1/route/{fullname}/download", get(api::manage::download))
         .route("/v1/route/{fullname}/delete", post(api::manage::delete))
+        .route("/v1/route/{fullname}/info", get(api::v1::route_info))
+        .route("/v1/route/{fullname}/public", post(api::v1::set_route_public))
         .route("/v1/route/{fullname}/movies", get(api::v1::route_movies))
         .route("/v1/route/{fullname}/movie/{cam}", get(serve::movie).post(api::v1::route_movie_action))
         .route("/v1/route/{fullname}/{cam}", get(api::v1::camera_m3u8))

@@ -558,16 +558,13 @@ pub async fn routes_segments(
 pub async fn camera_m3u8(
     State(state): State<AppState>,
     Path((fullname, cam)): Path<(String, String)>,
-    AuthUser(user): AuthUser,
+    auth: Option<Auth>,
 ) -> AppResult<Response> {
     let stem = cam
         .strip_suffix(".m3u8")
         .ok_or_else(|| AppError::BadRequest("expected <camera>.m3u8".into()))?;
     let (dongle, ts) = crate::storage::split_fullname(&fullname)?;
-    let device = load_device(&state, dongle).await?;
-    if !crate::access::can_manage_loaded(&state, &user, &device).await? {
-        return Err(AppError::Forbidden("not authorized for device".into()));
-    }
+    allow_route_view(&state, &fullname, dongle, auth.as_ref()).await?;
 
     #[derive(sqlx::FromRow)]
     struct SegLite {
@@ -604,8 +601,13 @@ pub async fn camera_m3u8(
         }
     };
 
-    let sig = auth::issue_hs512_ttl(&state.config.jwt_secret_b64, &user.identity, 86_400)
-        .map_err(AppError::Other)?;
+    // A logged-in caller gets a signed token on each segment; a public-route
+    // viewer needs none (serve.rs lets public routes through without a sig).
+    let sig = match auth.as_ref().and_then(|a| a.user.as_ref()) {
+        Some(u) => auth::issue_hs512_ttl(&state.config.jwt_secret_b64, &u.identity, 86_400)
+            .map_err(AppError::Other)?,
+        None => String::new(),
+    };
 
     let mut m = String::from("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:61\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n");
     let playable: Vec<(&SegLite, String)> =
@@ -617,8 +619,12 @@ pub async fn camera_m3u8(
         }
         let dur = if s.qcam_duration > 0.0 { s.qcam_duration } else { 60.0 };
         m.push_str(&format!("#EXTINF:{dur:.3},{}\n", s.number));
-        let sep = if url.contains('?') { '&' } else { '?' };
-        m.push_str(&format!("{url}{sep}sig={sig}\n"));
+        if sig.is_empty() {
+            m.push_str(&format!("{url}\n"));
+        } else {
+            let sep = if url.contains('?') { '&' } else { '?' };
+            m.push_str(&format!("{url}{sep}sig={sig}\n"));
+        }
         expected = s.number + 1;
     }
     m.push_str("#EXT-X-ENDLIST\n");
@@ -642,19 +648,89 @@ pub async fn movie_queue(
     Ok(Json(json!({ "building": building, "current": current, "queued": queued })))
 }
 
-/// GET /v1/route/:fullname/movies — which cameras have a ready stitched movie for
-/// this drive (+ size/duration), so the UI can play it natively and offer it as a
-/// download. Owner/admin only.
-pub async fn route_movies(
+/// Allow viewing a route's data if it's public, otherwise require a logged-in
+/// caller who can manage the device. Shared by the route-info / playlist / movies
+/// endpoints so a public share link works without auth.
+async fn allow_route_view(
+    state: &AppState,
+    fullname: &str,
+    dongle: &str,
+    auth: Option<&Auth>,
+) -> AppResult<()> {
+    let public: Option<(i64,)> = sqlx::query_as("SELECT is_public FROM routes WHERE fullname = ?")
+        .bind(fullname)
+        .fetch_optional(&state.pool)
+        .await?;
+    if matches!(public, Some((1,))) {
+        return Ok(());
+    }
+    let user = auth
+        .and_then(|a| a.user.as_ref())
+        .ok_or_else(|| AppError::Unauthorized("login required".into()))?;
+    let device = load_device(state, dongle).await?;
+    if crate::access::can_manage_loaded(state, user, &device).await? {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden("not authorized for device".into()))
+    }
+}
+
+/// GET /v1/route/:fullname/info — one drive's metadata (same shape as a
+/// routes_segments row), for public share links. Public routes are open;
+/// otherwise owner/admin/shared.
+pub async fn route_info(
+    State(state): State<AppState>,
+    Path(fullname): Path<String>,
+    auth: Option<Auth>,
+) -> AppResult<Json<Value>> {
+    let (dongle, _) = crate::storage::split_fullname(&fullname)?;
+    allow_route_view(&state, &fullname, dongle, auth.as_ref()).await?;
+    let row: Option<RouteRow> =
+        sqlx::query_as("SELECT * FROM routes WHERE fullname = ? AND maxqlog != -1")
+            .bind(&fullname)
+            .fetch_optional(&state.pool)
+            .await?;
+    let row = row.ok_or_else(|| AppError::NotFound("unknown route".into()))?;
+    let sig = match auth.as_ref().and_then(|a| a.user.as_ref()) {
+        Some(u) => auth::issue_hs512_ttl(&state.config.jwt_secret_b64, &u.identity, 86_400)
+            .map_err(AppError::Other)?,
+        None => String::new(),
+    };
+    Ok(Json(route_json(&row, &state.config.public_url, &sig)))
+}
+
+#[derive(serde::Deserialize)]
+pub struct PublicReq {
+    pub public: bool,
+}
+
+/// POST /v1/route/:fullname/public {public} — toggle a drive's public-share flag.
+/// Owner/admin/shared (whoever can manage the device).
+pub async fn set_route_public(
     State(state): State<AppState>,
     Path(fullname): Path<String>,
     AuthUser(user): AuthUser,
+    Json(req): Json<PublicReq>,
 ) -> AppResult<Json<Value>> {
     let (dongle, _) = crate::storage::split_fullname(&fullname)?;
-    let device = load_device(&state, dongle).await?;
-    if !crate::access::can_manage_loaded(&state, &user, &device).await? {
-        return Err(AppError::Forbidden("not authorized for device".into()));
-    }
+    crate::access::can_manage_device(&state, &user, dongle).await?;
+    sqlx::query("UPDATE routes SET is_public = ? WHERE fullname = ?")
+        .bind(req.public as i64)
+        .bind(&fullname)
+        .execute(&state.pool)
+        .await?;
+    Ok(Json(json!({ "ok": true, "is_public": req.public })))
+}
+
+/// GET /v1/route/:fullname/movies — which cameras have a ready stitched movie for
+/// this drive (+ size/duration). Public routes open; otherwise owner/admin/shared.
+pub async fn route_movies(
+    State(state): State<AppState>,
+    Path(fullname): Path<String>,
+    auth: Option<Auth>,
+) -> AppResult<Json<Value>> {
+    let (dongle, _) = crate::storage::split_fullname(&fullname)?;
+    allow_route_view(&state, &fullname, dongle, auth.as_ref()).await?;
     Ok(Json(json!({ "movies": crate::movie::status(&state, &fullname).await })))
 }
 
