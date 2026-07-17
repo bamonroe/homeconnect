@@ -21,6 +21,10 @@ clear message — not a grab-bag. Build + tests should pass at every commit, so 
 commit can be reverted or bisected on its own. Prefer several focused commits over
 one sweeping one when a change spans independent concerns.
 
+**Commit often, and push just as often.** Commit and push frequently as work
+progresses — don't let changes pile up in the working tree. The moment a logical
+piece is done and building, commit it and push it.
+
 ## Build / test / run — use the containers
 
 The host lacks `capnp`, `ffmpeg`, and `node`, and we want root-free builds, so
