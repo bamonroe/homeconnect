@@ -340,10 +340,11 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
         let device = transcode::current_device(state).await;
         let mut ok = false;
         if let Some(dev) = &device {
-            ok = run(state, vaapi_args(dev, &v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
+            let backend = transcode::gpu_backend(dev).await;
+            ok = run(state, gpu_args(&backend, &v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
             // Don't fall back to CPU on an abort (disable) — only on a real GPU failure.
             if !ok && is_enabled(state).await {
-                tracing::warn!(%cam, "movie VAAPI encode failed; falling back to CPU");
+                tracing::warn!(%cam, ?backend, "movie GPU encode failed; falling back to CPU");
                 let _ = tokio::fs::remove_file(&tmp).await;
             }
         }
@@ -446,9 +447,17 @@ fn qcamera_args(v_in: &str, out: &str) -> Vec<String> {
     .collect()
 }
 
-/// GPU pipeline: decode the concatenated HEVC + encode H.264 on VAAPI, muxing the
-/// concatenated qcamera audio (software input) when present. `lead` delays the
-/// audio input to realign the first-segment mic-startup gap.
+/// GPU pipeline: encode H.264 with the selected backend, muxing the concatenated
+/// qcamera audio when present. `lead` delays the audio input to realign the
+/// first-segment mic-startup gap.
+fn gpu_args(backend: &transcode::GpuBackend, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
+    match backend {
+        transcode::GpuBackend::Vaapi { dev } => vaapi_args(dev, v_in, a_in, audio, lead, opts, out),
+        transcode::GpuBackend::Nvenc => nvenc_args(v_in, a_in, audio, lead, opts, out),
+    }
+}
+
+/// Decode the concatenated HEVC + encode H.264 on VAAPI.
 fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
     let mut a: Vec<String> = vec![
         "-nostdin", "-y",
@@ -476,6 +485,38 @@ fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &
         if lead > 0.01 {
             // Prepend the measured first-segment mic-startup gap as silence so the
             // audio sits where it was recorded (deterministic, unlike -itsoffset).
+            a.extend(["-af".to_string(), format!("adelay={}:all=1", (lead * 1000.0) as i64)]);
+        }
+        a.push("-shortest".to_string());
+    }
+    a.extend(["-movflags", "+faststart", out].iter().map(|s| s.to_string()));
+    a
+}
+
+/// Decode HEVC with CUVID and encode H.264 with Nvidia NVENC.
+fn nvenc_args(v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
+    let mut a: Vec<String> = vec![
+        "-nostdin", "-y", "-fflags", "+genpts", "-r", FPS,
+        "-c:v", "hevc_cuvid", "-f", "hevc", "-i", v_in,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    if audio {
+        a.extend(["-i", a_in].iter().map(|s| s.to_string()));
+    }
+    a.extend(["-map", "0:v:0"].iter().map(|s| s.to_string()));
+    if let Some((w, h)) = opts.scale {
+        a.extend(["-vf".to_string(), format!("scale_cuda=w={w}:h={h}:format=yuv420p")]);
+    }
+    a.extend(
+        ["-c:v", "h264_nvenc", "-preset", "p6", "-cq", &(opts.crf + 5).to_string(), "-b:v", "0"]
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    if audio {
+        a.extend(["-map", "1:a:0?", "-c:a", "aac", "-b:a", "96k"].iter().map(|s| s.to_string()));
+        if lead > 0.01 {
             a.extend(["-af".to_string(), format!("adelay={}:all=1", (lead * 1000.0) as i64)]);
         }
         a.push("-shortest".to_string());

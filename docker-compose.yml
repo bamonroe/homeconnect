@@ -20,8 +20,7 @@ services:
     container_name: homeconnect-server
     restart: unless-stopped
     user: "1000:1000"
-    # GPU transcoding: expose the DRM render nodes and join the host 'render'
-    # group (gid 989) so the unprivileged user can use VAAPI on the AMD card.
+    # GPU transcoding: expose DRM render nodes and the Nvidia runtime.
     devices:
       - /dev/dri:/dev/dri
     group_add:
@@ -33,6 +32,18 @@ services:
     environment:
       # HC_BIND / HC_DATA_DIR / HC_WEB_DIR are baked into the image (Dockerfile).
       # GPU transcode device (not in the image); switchable at runtime in Settings.
-      HC_VAAPI_DEVICE: "/dev/dri/renderD129"   # AMD Radeon RX 550 (Intel iGPU = renderD128)
+      HC_TRANSCODE_DEVICE: "/dev/dri/renderD128"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities:
+                - gpu
+                - compute
+                - video
     ports:
       - "127.0.0.1:8099:8099"

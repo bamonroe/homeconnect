@@ -19,7 +19,7 @@ pub struct Config {
     pub retain_days: i64,
     pub retain_max_drives: i64,
     pub retain_gb: f64,
-    /// VAAPI DRM render node for GPU transcoding (e.g. `/dev/dri/renderD129`).
+    /// Default GPU render node for transcoding (e.g. `/dev/dri/renderD129`).
     /// `None` → CPU (libx264). GPU failures fall back to CPU per-transcode.
     pub vaapi_device: Option<String>,
     /// SSH-pull sync: fetch drives off the device over SSH (the device's uploader
@@ -62,7 +62,7 @@ impl Config {
             retain_days: env_or("HC_RETAIN_DAYS", "30").parse().unwrap_or(30),
             retain_max_drives: env_or("HC_RETAIN_DRIVES", "30").parse().unwrap_or(30),
             retain_gb: env_or("HC_RETAIN_GB", "100").parse().unwrap_or(100.0),
-            vaapi_device: match env_or("HC_VAAPI_DEVICE", "") {
+            vaapi_device: match env_or("HC_TRANSCODE_DEVICE", &env_or("HC_VAAPI_DEVICE", "")) {
                 s if s.is_empty() => None,
                 s => Some(s),
             },

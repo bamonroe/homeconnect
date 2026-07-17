@@ -7,7 +7,7 @@
 //! linking libav). A semaphore bounds concurrent transcodes so a fresh drive
 //! doesn't spawn a dozen encoders at once.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ use crate::storage::blob_key;
 const DEVICE_KEY: &str = "transcode_device";
 
 /// The encoder/decoder device the admin has selected at runtime, falling back to
-/// the `HC_VAAPI_DEVICE` env default. `None` = CPU (libx264).
+/// the env default. `None` = CPU (libx264).
 pub async fn current_device(state: &AppState) -> Option<String> {
     match crate::settings::get(state, DEVICE_KEY).await {
         Some(s) if s == "cpu" => None,
@@ -41,7 +41,14 @@ pub async fn set_device(state: &AppState, value: &str) -> AppResult<()> {
 pub struct DeviceOption {
     pub value: String,  // "cpu" or a DRM render node path
     pub label: String,  // human-friendly
-    pub encodes: bool,   // can it H.264-encode via VAAPI?
+    pub encodes: bool,   // can it H.264-encode with its selected backend?
+}
+
+/// ffmpeg GPU backend for a selected transcode device.
+#[derive(Clone, Debug)]
+pub enum GpuBackend {
+    Vaapi { dev: String },
+    Nvenc,
 }
 
 /// The GPU set is fixed for the process lifetime, but probing it (`vainfo` per
@@ -60,7 +67,8 @@ pub fn warm() {
 }
 
 /// Enumerate the transcode devices the server can use: always CPU, plus each
-/// DRM render node (probed via vainfo for a friendly name + encode capability).
+/// DRM render node. Intel/AMD nodes use VAAPI; Nvidia nodes use NVENC when the
+/// container can see the Nvidia runtime devices.
 async fn probe_devices() -> Vec<DeviceOption> {
     let mut out = vec![DeviceOption {
         value: "cpu".into(),
@@ -81,10 +89,88 @@ async fn probe_devices() -> Vec<DeviceOption> {
     nodes.sort();
     for node in nodes {
         let dev = node.to_string_lossy().to_string();
-        let (label, encodes) = probe_vaapi(&dev).await;
+        let (label, encodes) = if is_nvidia_render_node(&dev) {
+            probe_nvenc(&dev).await
+        } else {
+            probe_vaapi(&dev).await
+        };
         out.push(DeviceOption { value: dev, label, encodes });
     }
     out
+}
+
+/// Resolve a stored device value to the ffmpeg backend to use.
+pub async fn gpu_backend(value: &str) -> GpuBackend {
+    if is_nvidia_render_node(value) && ffmpeg_has_encoder("h264_nvenc").await {
+        GpuBackend::Nvenc
+    } else {
+        GpuBackend::Vaapi { dev: value.to_string() }
+    }
+}
+
+fn is_nvidia_render_node(dev: &str) -> bool {
+    let Some(node) = Path::new(dev).file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let vendor = Path::new("/sys/class/drm").join(node).join("device/vendor");
+    std::fs::read_to_string(vendor)
+        .map(|s| s.trim().eq_ignore_ascii_case("0x10de"))
+        .unwrap_or(false)
+}
+
+async fn ffmpeg_has_encoder(name: &str) -> bool {
+    static ENCODERS: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
+    let encoders = ENCODERS.get_or_init(|| async {
+        Command::new("ffmpeg")
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .await
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default()
+    }).await;
+    encoders.contains(name)
+}
+
+async fn nvidia_runtime_visible() -> bool {
+    if Path::new("/dev/nvidiactl").exists() {
+        return true;
+    }
+    Command::new("nvidia-smi")
+        .args(["--query-gpu=name", "--format=csv,noheader"])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+async fn nvidia_name() -> Option<String> {
+    let out = Command::new("nvidia-smi")
+        .args(["--query-gpu=name", "--format=csv,noheader"])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout)
+        .ok()
+        .and_then(|s| s.lines().next().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+}
+
+async fn probe_nvenc(dev: &str) -> (String, bool) {
+    let node = dev.rsplit('/').next().unwrap_or(dev);
+    let has_encoder = ffmpeg_has_encoder("h264_nvenc").await;
+    let runtime = nvidia_runtime_visible().await;
+    let name = nvidia_name().await.unwrap_or_else(|| "NVIDIA GPU".to_string());
+    let suffix = if !has_encoder {
+        " (ffmpeg lacks h264_nvenc)"
+    } else if !runtime {
+        " (Nvidia runtime unavailable)"
+    } else {
+        ""
+    };
+    (format!("{name} NVENC ({node}){suffix}"), has_encoder && runtime)
 }
 
 /// Probe a render node with vainfo → (friendly label, can-H264-encode).
@@ -192,14 +278,15 @@ pub async fn ensure_transcode(
     // duration and seeking lands on the right segment.
     let offset = (seg.max(0) * SEGMENT_SECS).to_string();
 
-    // Prefer GPU (VAAPI) if selected; fall back to CPU on any failure so a
+    // Prefer GPU if selected; fall back to CPU on any failure so a
     // GPU hiccup never breaks playback.
     let device = current_device(state).await;
     let mut ok = false;
     if let Some(dev) = &device {
-        ok = run_ffmpeg(vaapi_args(dev, &src, &tmp_s, &offset)).await;
+        let backend = gpu_backend(dev).await;
+        ok = run_ffmpeg(gpu_args(&backend, &src, &tmp_s, &offset)).await;
         if !ok {
-            tracing::warn!(%cam, "VAAPI transcode failed; falling back to CPU");
+            tracing::warn!(%cam, ?backend, "GPU transcode failed; falling back to CPU");
             let _ = tokio::fs::remove_file(&tmp).await;
         }
     }
@@ -218,7 +305,13 @@ pub async fn ensure_transcode(
     }
 }
 
-/// GPU pipeline: decode HEVC + encode H.264 on the VAAPI device.
+fn gpu_args(backend: &GpuBackend, src: &str, out: &str, ts_offset: &str) -> Vec<String> {
+    match backend {
+        GpuBackend::Vaapi { dev } => vaapi_args(dev, src, out, ts_offset),
+        GpuBackend::Nvenc => nvenc_args(src, out, ts_offset),
+    }
+}
+
 fn vaapi_args(dev: &str, src: &str, out: &str, ts_offset: &str) -> Vec<String> {
     [
         "-nostdin", "-y",
@@ -228,6 +321,22 @@ fn vaapi_args(dev: &str, src: &str, out: &str, ts_offset: &str) -> Vec<String> {
         // qp28 ≈ the same visual quality as x264 crf23 here but ~1/3 the size of
         // the old qp24 (measured ~4.4 vs ~6.9 MB/min on the RX 550).
         "-c:v", "h264_vaapi", "-qp", "28", "-an",
+        "-output_ts_offset", ts_offset, "-muxdelay", "0",
+        "-f", "mpegts", out,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Nvidia pipeline: decode HEVC with CUVID and encode H.264 with NVENC. This
+/// avoids depending on Nvidia's optional VAAPI compatibility layer.
+fn nvenc_args(src: &str, out: &str, ts_offset: &str) -> Vec<String> {
+    [
+        "-nostdin", "-y", "-fflags", "+genpts", "-r", FPS,
+        "-c:v", "hevc_cuvid", "-f", "hevc", "-i", src,
+        "-c:v", "h264_nvenc", "-preset", "p6", "-cq", "28", "-b:v", "0",
+        "-an",
         "-output_ts_offset", ts_offset, "-muxdelay", "0",
         "-f", "mpegts", out,
     ]
