@@ -493,7 +493,9 @@ fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &
     a
 }
 
-/// Decode HEVC with CUVID and encode H.264 with Nvidia NVENC.
+/// Decode HEVC with CUVID and encode AV1 with Nvidia NVENC (Ada+ has an AV1
+/// encoder — ~30-50% smaller than H.264 at the same quality). The AV1 stream is
+/// muxed into MP4 (`av01`), which the Drive `<video>` plays on modern browsers.
 fn nvenc_args(v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
     let mut a: Vec<String> = vec![
         "-nostdin", "-y", "-fflags", "+genpts", "-r", FPS,
@@ -510,7 +512,7 @@ fn nvenc_args(v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts,
         a.extend(["-vf".to_string(), format!("scale_cuda=w={w}:h={h}:format=yuv420p")]);
     }
     a.extend(
-        ["-c:v", "h264_nvenc", "-preset", "p6", "-cq", &(opts.crf + 5).to_string(), "-b:v", "0"]
+        ["-c:v", "av1_nvenc", "-preset", "p6", "-cq", &(opts.crf + 5).to_string(), "-b:v", "0"]
             .iter()
             .map(|s| s.to_string()),
     );

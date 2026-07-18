@@ -24,10 +24,24 @@ FROM debian:bookworm-slim AS runtime
 #   mesa-va-drivers          → radeonsi (AMD)
 #   intel-media-va-driver    → iHD (Intel Quick Sync)
 # (vainfo is handy for debugging GPU access from inside the container.)
+#
+# We ship a static ffmpeg 7.x GPL build (BtbN) instead of Debian's ffmpeg (5.1):
+# the Nvidia AV1 encoder `av1_nvenc` only exists in ffmpeg 6.0+, and movies now
+# encode AV1 on the Ada card. The static build carries NVENC + VAAPI + libx264,
+# so the VAAPI/CPU fallback paths still work; the driver packages below give
+# VAAPI a device. The build-time `grep av1_nvenc` asserts the encoder is present
+# so a bad URL fails the image build rather than silently falling back to CPU.
+ARG FFMPEG_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-gpl-7.1.tar.xz
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ffmpeg ca-certificates libva2 vainfo \
+        ca-certificates libva2 vainfo \
         mesa-va-drivers intel-media-va-driver \
-        openssh-client \
+        openssh-client wget xz-utils \
+    && wget -qO /tmp/ffmpeg.tar.xz "$FFMPEG_URL" \
+    && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp \
+    && cp /tmp/ffmpeg-*/bin/ffmpeg /tmp/ffmpeg-*/bin/ffprobe /usr/local/bin/ \
+    && /usr/local/bin/ffmpeg -hide_banner -encoders | grep -q av1_nvenc \
+    && rm -rf /tmp/ffmpeg* \
+    && apt-get purge -y wget xz-utils && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 # The container runs as uid 1000 (see compose). ssh-keygen/ssh call getpwuid(),
 # which fails ("No user exists for uid 1000") without a passwd entry — so create
