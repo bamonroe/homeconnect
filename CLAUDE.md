@@ -21,9 +21,11 @@ clear message — not a grab-bag. Build + tests should pass at every commit, so 
 commit can be reverted or bisected on its own. Prefer several focused commits over
 one sweeping one when a change spans independent concerns.
 
-**Commit often, and push just as often.** Commit and push frequently as work
-progresses — don't let changes pile up in the working tree. The moment a logical
-piece is done and building, commit it and push it.
+**Commit often, atomically, and push to the remote just as often.** Commit and
+push frequently as work progresses — never let uncommitted work sit in the working
+tree. The moment a logical piece is done and building, commit it atomically and
+push it to the remote. Uncommitted changes are lost if a session ends, so pushing
+promptly is how the work is kept safe, not just tidy.
 
 ## Build / test / run — use the containers
 
