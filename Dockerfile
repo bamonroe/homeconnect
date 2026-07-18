@@ -25,13 +25,15 @@ FROM debian:bookworm-slim AS runtime
 #   intel-media-va-driver    → iHD (Intel Quick Sync)
 # (vainfo is handy for debugging GPU access from inside the container.)
 #
-# We ship a static ffmpeg 7.x GPL build (BtbN) instead of Debian's ffmpeg (5.1):
+# We ship a static ffmpeg (BtbN master build) instead of Debian's ffmpeg (5.1):
 # the Nvidia AV1 encoder `av1_nvenc` only exists in ffmpeg 6.0+, and movies now
-# encode AV1 on the Ada card. The static build carries NVENC + VAAPI + libx264,
+# encode AV1 on the Ada card. Note the *tagged* BtbN builds (e.g. gpl-7.1) are
+# compiled against older Nvidia codec headers and ship only h264/hevc_nvenc — the
+# `master` build is the one that carries av1_nvenc. It also has VAAPI + libx264,
 # so the VAAPI/CPU fallback paths still work; the driver packages below give
 # VAAPI a device. The build-time `grep av1_nvenc` asserts the encoder is present
-# so a bad URL fails the image build rather than silently falling back to CPU.
-ARG FFMPEG_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-gpl-7.1.tar.xz
+# so a bad/wrong build fails the image build rather than silently reverting to CPU.
+ARG FFMPEG_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates libva2 vainfo \
         mesa-va-drivers intel-media-va-driver \
