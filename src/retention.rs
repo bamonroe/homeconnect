@@ -112,6 +112,25 @@ pub async fn run_once(state: &AppState) -> AppResult<usize> {
     }
     let mut deleted = to_delete.len();
 
+    // Reclaim orphaned movies: rows/blobs whose route no longer exists (e.g. left
+    // behind by an older prune that didn't delete movies). One-time backlog clear
+    // that then stays clean because `delete_route` now removes movies inline.
+    let orphans: Vec<(String, String)> = sqlx::query_as(
+        "SELECT m.fullname, m.cam FROM movies m \
+         LEFT JOIN routes r ON r.fullname = m.fullname \
+         WHERE r.fullname IS NULL",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    for (fullname, cam) in &orphans {
+        if let Some((dongle, ts)) = fullname.split_once('|') {
+            crate::movie::delete(state, dongle, ts, cam).await;
+        }
+    }
+    if !orphans.is_empty() {
+        tracing::info!(count = orphans.len(), "retention: reclaimed orphaned movies");
+    }
+
     // 3) Storage cap: delete oldest remaining routes until under the limit.
     if policy.max_gb > 0.0 {
         let cap = (policy.max_gb * 1_000_000_000.0) as u64;
@@ -151,10 +170,12 @@ pub async fn delete_route(state: &AppState, fullname: &str) -> AppResult<()> {
             .await?;
 
     // Known per-segment artifacts (extensions tried for the compressed logs).
+    // `telemetry.json`/`model.json` are derived per segment and must be listed
+    // here too, else they're orphaned when the route is pruned.
     let files = [
         "qcamera.ts", "fcamera.hevc", "dcamera.hevc", "ecamera.hevc",
         "qlog.bz2", "qlog.zst", "rlog.bz2", "rlog.zst",
-        "coords.json", "events.json", "sprite.jpg",
+        "coords.json", "events.json", "telemetry.json", "model.json", "sprite.jpg",
     ];
     for (seg,) in &segs {
         for f in files {
@@ -168,6 +189,14 @@ pub async fn delete_route(state: &AppState, fullname: &str) -> AppResult<()> {
                 .join(format!("{dongle}_{ts}--{seg}--{cam}.ts"));
             let _ = tokio::fs::remove_file(&p).await;
         }
+    }
+
+    // Route-level stitched movies are the single largest artifact class — they
+    // are NOT keyed per segment, so they must be deleted explicitly or they leak
+    // (blob + `movies` row) every time a route is pruned, and the storage-cap
+    // loop can never reclaim them.
+    for cam in crate::movie::MOVIE_CAMS {
+        crate::movie::delete(state, dongle, ts, cam).await;
     }
 
     sqlx::query("DELETE FROM segments WHERE canonical_route_name = ?")
