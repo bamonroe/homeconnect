@@ -182,6 +182,57 @@ pub async fn reencode_movies(
     Ok(Json(json!({ "ok": true, "cleared": cleared })))
 }
 
+/// GET /v1/admin/subs — subtitle generation settings (+ whether the configured
+/// whisper server answers) and how many drives are transcribed so far.
+pub async fn get_subs(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    let mut out = crate::subs::settings_json(&state).await;
+    let (done,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM subs WHERE bytes > 0")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or((0,));
+    out["transcribed"] = json!(done);
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub struct SubsReq {
+    pub enabled: Option<bool>,
+    pub whisper_url: Option<String>,
+}
+
+/// POST /v1/admin/subs — toggle subtitle generation / point at a whisper server.
+pub async fn set_subs(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<SubsReq>,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    if let Some(url) = req.whisper_url.as_deref() {
+        crate::subs::set_whisper_url(&state, url).await?;
+    }
+    if let Some(on) = req.enabled {
+        crate::subs::set_enabled(&state, on).await?;
+    }
+    tracing::info!(user = %user.username, ?req.enabled, "subtitles settings updated");
+    Ok(Json(crate::subs::settings_json(&state).await))
+}
+
+/// POST /v1/admin/subs/rebuild — drop every transcript so they're regenerated
+/// (e.g. after switching the whisper model). User-deleted ones stay deleted.
+pub async fn rebuild_subs(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    let cleared = crate::subs::rebuild_all(&state).await;
+    tracing::info!(user = %user.username, cleared, "subtitles rebuild all");
+    Ok(Json(json!({ "ok": true, "cleared": cleared })))
+}
+
 /// GET /v1/admin/ignore-rules — the drive ignore rules (DNF: OR of AND-conditions).
 pub async fn get_ignore_rules(
     State(state): State<AppState>,

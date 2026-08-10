@@ -29,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
     homeconnect::devsync::spawn_workers(state.clone());
     homeconnect::devsync::spawn(state.clone());
     homeconnect::movie::spawn(state.clone()); // build per-drive watchable movies
+    homeconnect::subs::spawn(state.clone()); // transcribe drive audio → subtitles
     homeconnect::transcode::warm(); // probe GPUs once now, not on first Settings load
     {
         // Sweep orphaned partial transcode outputs left by an interrupted encode.

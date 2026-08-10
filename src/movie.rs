@@ -384,7 +384,7 @@ async fn nonempty(path: &std::path::Path) -> bool {
 /// the comma the mic spins up a couple seconds after the camera on the first
 /// segment of a drive; this is used to delay the muxed audio so it realigns.
 /// Clamped to [0, 10]; 0 on any probe failure.
-async fn av_lead(path: &str) -> f64 {
+pub(crate) async fn av_lead(path: &str) -> f64 {
     let out = Command::new("ffprobe")
         .args(["-v", "error", "-show_entries", "stream=codec_type,start_time", "-of", "csv=p=0"])
         .arg(path)

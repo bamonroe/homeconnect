@@ -25,6 +25,7 @@ pub mod serve;
 pub mod settings;
 pub mod state;
 pub mod storage;
+pub mod subs;
 pub mod sync_queue;
 pub mod transcode;
 
@@ -107,6 +108,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/sync", get(api::settings::get_sync).post(api::settings::set_sync))
         .route("/v1/admin/encoding", get(api::settings::get_encoding).post(api::settings::set_encoding))
         .route("/v1/admin/encoding/reencode", post(api::settings::reencode_movies))
+        .route("/v1/admin/subs", get(api::settings::get_subs).post(api::settings::set_subs))
+        .route("/v1/admin/subs/rebuild", post(api::settings::rebuild_subs))
         .route("/v1/admin/cam-calib", get(api::settings::get_cam_calib).post(api::settings::set_cam_calib))
         .route("/v1/admin/ignore-rules", get(api::settings::get_ignore_rules).post(api::settings::set_ignore_rules))
         .route("/v1/devices/{dongle_id}/routes_segments", get(api::v1::routes_segments))
@@ -115,6 +118,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/route/{fullname}/info", get(api::v1::route_info))
         .route("/v1/route/{fullname}/public", post(api::v1::set_route_public))
         .route("/v1/route/{fullname}/movies", get(api::v1::route_movies))
+        .route("/v1/route/{fullname}/subs", get(api::v1::route_subs).post(api::v1::route_subs_action))
+        .route("/v1/route/{fullname}/subs.vtt", get(serve::subs))
         .route("/v1/route/{fullname}/movie/{cam}", get(serve::movie).post(api::v1::route_movie_action))
         .route("/v1/route/{fullname}/{cam}", get(api::v1::camera_m3u8))
         .route("/v1/transcode/{dongle}/{timestamp}/{segment}/{file}", get(serve::transcode))

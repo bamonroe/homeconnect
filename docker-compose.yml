@@ -23,6 +23,8 @@ services:
     # GPU transcoding: expose DRM render nodes and the Nvidia runtime.
     devices:
       - /dev/dri:/dev/dri
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     group_add:
       - "989"
     volumes:
@@ -33,6 +35,11 @@ services:
       # HC_BIND / HC_DATA_DIR / HC_WEB_DIR are baked into the image (Dockerfile).
       # GPU transcode device (not in the image); switchable at runtime in Settings.
       HC_TRANSCODE_DEVICE: "/dev/dri/renderD128"
+      # Subtitles: the whisper.cpp server from the speech_services stack, reached
+      # over the host gateway (it's a separate compose project, so no shared
+      # network — the published port is the contract). Toggle in Settings.
+      HC_WHISPER_URL: "http://host.docker.internal:8571"
+      HC_SUBS_ENABLED: "true"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
     deploy:

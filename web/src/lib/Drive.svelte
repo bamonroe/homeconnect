@@ -54,6 +54,10 @@
   // has one, we play it directly (native audio, no HLS + audio-sync hack).
   let movies = $state({});
   let movieMode = $state(false);
+  // Whisper transcript for this drive (one WebVTT for the whole route, so it
+  // works in both movie and HLS playback — both share the route-relative clock).
+  let subs = $state(null);
+  let subsOn = $state(true);
 
   // Audio boost. The comma mic is quiet and the <video>/<audio> volume caps at
   // 100%; a Web Audio gain node lets us amplify past that. Both the movie's video
@@ -381,6 +385,15 @@
     marker.setLngLat([c.lng, c.lat]);
   }
 
+  // Show/hide the transcript. The <track> is already attached; flipping the
+  // TextTrack's mode is what the browser actually honours (the `default`
+  // attribute only sets the initial state).
+  function toggleSubs() {
+    subsOn = !subsOn;
+    const t = videoEl?.textTracks?.[0];
+    if (t) t.mode = subsOn ? 'showing' : 'disabled';
+  }
+
   function loadVideo() {
     // A stitched movie exists for this camera → play it natively (audio muxed in),
     // no HLS, no separate audio track.
@@ -512,6 +525,10 @@
         const r = await api.routeMovies(route.fullname);
         movies = Object.fromEntries(r.movies.map((m) => [m.cam, m]));
       } catch {}
+      try {
+        const s = await api.routeSubs(route.fullname);
+        if (s.ready && s.cues > 0) subs = s;
+      } catch {}
       await loadArtifacts();
       maybeDraw();
       loadVideo();
@@ -607,7 +624,16 @@
               </div>
             {/if}
             <div class="video-wrap">
-              <video bind:this={videoEl} controls playsinline muted></video>
+              <video bind:this={videoEl} controls playsinline muted>
+                {#if subs}
+                  <track
+                    kind="subtitles"
+                    srclang="en"
+                    label="Speech"
+                    src={api.subsUrl(route.fullname)}
+                    default={subsOn} />
+                {/if}
+              </video>
               {#if overlayOk}
                 <DriveOverlay frames={modelFrames} rpy={modelRpy} {curT} calib={camCalib} fisheye={camCalib?.fisheye} {nw} {nh} />
               {/if}
@@ -628,6 +654,13 @@
             </div>
             <div class="ctrl">
               <span class="muted">t = {fmtT(curT)}</span>
+              {#if subs}
+                <button
+                  class="ghost rate"
+                  class:active={subsOn}
+                  onclick={toggleSubs}
+                  title="{subs.cues} spoken lines transcribed from this drive's audio">CC</button>
+              {/if}
               {#if movieMode}<span class="moviebadge" title="Playing the stitched HD movie with muxed audio">▶ HD movie</span>{/if}
               <button class="ghost rate" class:active={showModel} onclick={toggleModel} title="Top-down model view (needs full-res rlog)">Top-down</button>
               <button class="ghost rate" class:active={showOverlay} onclick={toggleOverlay} title="Model overlay on the road video">Overlay</button>

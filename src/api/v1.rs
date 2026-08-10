@@ -734,6 +734,39 @@ pub async fn route_movies(
     Ok(Json(json!({ "movies": crate::movie::status(&state, &fullname).await })))
 }
 
+/// GET /v1/route/:fullname/subs — whether this drive has a transcript ready
+/// (+ cue count). Public routes open; otherwise owner/admin/shared.
+pub async fn route_subs(
+    State(state): State<AppState>,
+    Path(fullname): Path<String>,
+    auth: Option<Auth>,
+) -> AppResult<Json<Value>> {
+    let (dongle, _) = crate::storage::split_fullname(&fullname)?;
+    allow_route_view(&state, &fullname, dongle, auth.as_ref()).await?;
+    Ok(Json(crate::subs::status(&state, &fullname).await))
+}
+
+/// POST /v1/route/:fullname/subs — delete or rebuild a drive's subtitles.
+/// Owner/admin, same as the movie action.
+pub async fn route_subs_action(
+    State(state): State<AppState>,
+    Path(fullname): Path<String>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<MovieActionReq>,
+) -> AppResult<Json<Value>> {
+    let (dongle, ts) = crate::storage::split_fullname(&fullname)?;
+    let device = load_device(&state, dongle).await?;
+    if !crate::access::can_manage_loaded(&state, &user, &device).await? {
+        return Err(AppError::Forbidden("not authorized for device".into()));
+    }
+    match req.action.as_str() {
+        "delete" => crate::subs::disable(&state, dongle, ts).await,
+        "rebuild" => crate::subs::delete(&state, dongle, ts).await,
+        _ => return Err(AppError::BadRequest("action must be delete or rebuild".into())),
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[derive(serde::Deserialize)]
 pub struct MovieActionReq {
     /// "delete" → remove the movie and stop it auto-rebuilding; "rebuild" → clear

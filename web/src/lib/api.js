@@ -105,11 +105,22 @@ export const api = {
     req('POST', `/v1/route/${encodeURIComponent(fullname)}/public`, { public: isPublic }),
   movieUrl: (fullname, cam) =>
     `/v1/route/${encodeURIComponent(fullname)}/movie/${cam}.mp4?sig=${getToken()}`,
+  // Whisper-generated subtitles for a drive (one WebVTT per route).
+  routeSubs: (fullname) => req('GET', `/v1/route/${encodeURIComponent(fullname)}/subs`),
+  subsUrl: (fullname) =>
+    `/v1/route/${encodeURIComponent(fullname)}/subs.vtt?sig=${getToken()}`,
+  // action: 'delete' (remove + stop auto-rebuild) or 'rebuild' (re-transcribe)
+  subsAction: (fullname, action) =>
+    req('POST', `/v1/route/${encodeURIComponent(fullname)}/subs`, { action }),
   // action: 'delete' (remove + stop auto-rebuild) or 'rebuild' (re-encode now)
   movieAction: (fullname, cam, action) =>
     req('POST', `/v1/route/${encodeURIComponent(fullname)}/movie/${cam}`, { action }),
   // The signed token to append to direct media/artifact fetches.
   sig: () => getToken(),
+  // admin: subtitles (whisper)
+  subsSettings: () => req('GET', '/v1/admin/subs'),
+  setSubsSettings: (p) => req('POST', '/v1/admin/subs', p),
+  rebuildSubs: () => req('POST', '/v1/admin/subs/rebuild'),
   // admin: retention
   retention: () => req('GET', '/v1/admin/retention'),
   setRetention: (p) => req('POST', '/v1/admin/retention', p),

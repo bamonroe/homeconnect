@@ -176,6 +176,21 @@ pub async fn movie(
     serve_file(&path, "video/mp4", &headers).await
 }
 
+/// GET /v1/route/:fullname/subs.vtt — the drive's whisper transcript, attached
+/// to the movie as a `<track>`. Same access rules as the movie it captions, so a
+/// public share link carries its subtitles. 404 until it's been transcribed.
+pub async fn subs(
+    State(state): State<AppState>,
+    Path(fullname): Path<String>,
+    auth: Option<Auth>,
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    let (dongle, timestamp) = crate::storage::split_fullname(&fullname)?;
+    check_route_access(&state, &fullname, dongle, auth).await?;
+    let path = state.blobs.path_for(&crate::subs::subs_key(dongle, timestamp));
+    serve_file(&path, "text/vtt; charset=utf-8", &headers).await
+}
+
 /// Stream a file from disk with HTTP Range support (206 when requested).
 async fn serve_file(path: &std::path::Path, ct: &str, headers: &HeaderMap) -> AppResult<Response> {
     let mut f = match tokio::fs::File::open(path).await {

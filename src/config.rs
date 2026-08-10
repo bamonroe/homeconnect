@@ -42,6 +42,12 @@ pub struct Config {
     /// interval (seconds). Both have runtime toggles in Settings that seed from these.
     pub movie_enabled: bool,
     pub movie_interval_secs: u64,
+    /// Background subtitle generation: transcribe each drive's audio with a
+    /// whisper.cpp server and store a WebVTT track alongside its movie. Off by
+    /// default (it needs a whisper server); runtime toggle in Settings seeds here.
+    pub subs_enabled: bool,
+    /// Base URL of the whisper.cpp `/inference` server (runtime-overridable).
+    pub whisper_url: String,
     /// Coordination/login server for the `--tailscale` option of onboard.sh
     /// (e.g. a self-hosted headscale URL). Empty = Tailscale's default coordination
     /// server. Not a secret (a public hostname); the per-device authkey is passed
@@ -72,6 +78,8 @@ impl Config {
             device_autoprune: env_or("HC_DEVICE_AUTOPRUNE", "false").parse().unwrap_or(false),
             movie_enabled: env_or("HC_MOVIE_ENABLED", "true").parse().unwrap_or(true),
             movie_interval_secs: env_or("HC_MOVIE_INTERVAL_SECS", "120").parse().unwrap_or(120),
+            subs_enabled: env_or("HC_SUBS_ENABLED", "false").parse().unwrap_or(false),
+            whisper_url: trim_trailing_slash(env_or("HC_WHISPER_URL", "http://127.0.0.1:8571")),
             tailnet_login_server: trim_trailing_slash(env_or("HC_TAILNET_LOGIN_SERVER", "")),
         }
     }

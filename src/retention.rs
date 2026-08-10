@@ -198,6 +198,8 @@ pub async fn delete_route(state: &AppState, fullname: &str) -> AppResult<()> {
     for cam in crate::movie::MOVIE_CAMS {
         crate::movie::delete(state, dongle, ts, cam).await;
     }
+    // Same for the drive's transcript — also route-level, also not per segment.
+    crate::subs::delete(state, dongle, ts).await;
 
     sqlx::query("DELETE FROM segments WHERE canonical_route_name = ?")
         .bind(fullname)

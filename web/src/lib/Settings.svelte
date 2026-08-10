@@ -9,6 +9,7 @@
   let tc = $state(null); // { current, devices: [{value,label,encodes}] }
   let sync = $state(null); // { enabled, interval_secs, types:[], all_types:[] }
   let encode = $state(null); // { enabled, interval_secs }
+  let subs = $state(null); // { enabled, whisper_url, reachable, transcribed }
   let ignoreRules = $state([]); // [{ conditions: [{field, op, value}] }]
   let ignoreMsg = $state('');
 
@@ -16,10 +17,11 @@
     error = '';
     try {
       // Fetch concurrently — one round trip instead of several sequential ones.
-      const [c, t, s, e, ir] = await Promise.all([
+      const [c, t, s, e, ir, sb] = await Promise.all([
         api.retention(), api.transcode(), api.syncSettings(), api.encodingSettings(), api.ignoreRules(),
+        api.subsSettings(),
       ]);
-      cfg = c; tc = t; sync = s; encode = e; ignoreRules = ir.rules || [];
+      cfg = c; tc = t; sync = s; encode = e; ignoreRules = ir.rules || []; subs = sb;
     } catch (e) {
       error = e.message;
     }
@@ -148,6 +150,45 @@
       ignoreMsg = 'Ignore rules saved.';
     } catch (e) {
       ignoreMsg = e.message;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function toggleSubs(e) {
+    const on = e.currentTarget.checked;
+    busy = true; error = ''; msg = '';
+    try {
+      subs = await api.setSubsSettings({ enabled: on });
+      msg = on ? 'Subtitle transcription turned on.' : 'Subtitle transcription turned off.';
+    } catch (err) {
+      error = err.message;
+      e.currentTarget.checked = !on;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function saveWhisperUrl() {
+    busy = true; error = ''; msg = '';
+    try {
+      subs = await api.setSubsSettings({ whisper_url: subs.whisper_url });
+      msg = subs.reachable ? 'Whisper server saved and reachable.' : 'Saved, but the whisper server did not answer.';
+    } catch (err) {
+      error = err.message;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function rebuildSubs() {
+    if (!confirm('Re-transcribe every drive? Existing transcripts are regenerated in the background (deleted ones stay deleted).')) return;
+    busy = true; error = ''; msg = '';
+    try {
+      const r = await api.rebuildSubs();
+      msg = `Re-transcribing ${r.cleared} drive${r.cleared === 1 ? '' : 's'}.`;
+    } catch (err) {
+      error = err.message;
     } finally {
       busy = false;
     }
@@ -324,6 +365,33 @@
         <div class="actions">
           <button disabled={busy} onclick={saveEncodeQuality}>Save quality</button>
           <button class="ghost" disabled={busy} onclick={reencodeAll}>Re-encode all movies</button>
+        </div>
+      </div>
+    {/if}
+
+    {#if subs}
+      <div class="card">
+        <h3>Subtitles</h3>
+        <p class="muted small">
+          Transcribe each fully-synced drive's audio with a whisper server and attach it to the
+          drive's video as a subtitle track (the <b>CC</b> button in the Drive view). Only drives
+          whose audio covers the whole drive are transcribed, so the cue times line up with the
+          movie. Most drives are silent — that just means no cues.
+        </p>
+        <label class="toggle">
+          <input type="checkbox" checked={subs.enabled} disabled={busy} onchange={toggleSubs} />
+          <span>{subs.enabled ? 'On' : 'Off'}</span>
+        </label>
+        <label>Whisper server URL
+          <input type="text" bind:value={subs.whisper_url} disabled={busy} placeholder="http://127.0.0.1:8571" />
+        </label>
+        <p class="muted small">
+          {subs.reachable ? '✓ Reachable.' : '✕ Not answering — check the URL and that the container is up.'}
+          {subs.transcribed} drive{subs.transcribed === 1 ? '' : 's'} transcribed so far.
+        </p>
+        <div class="actions">
+          <button disabled={busy} onclick={saveWhisperUrl}>Save server</button>
+          <button class="ghost" disabled={busy} onclick={rebuildSubs}>Re-transcribe all</button>
         </div>
       </div>
     {/if}

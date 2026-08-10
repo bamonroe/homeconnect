@@ -82,6 +82,7 @@ macros).
 | `serve.rs` | `connectdata` blob serving with HTTP Range (206); transcode + audio serving |
 | `transcode.rs` | HEVC→H.264 (VAAPI qp28 or CPU libx264 veryfast/crf23, CPU fallback), audio extract, disk-cached, semaphore-bounded; runtime device selection (`list/current/set_device`); `ffprobe` duration; `clean_cache_tmp` (orphaned `.tmp.ts`/`.part` sweep at startup) |
 | `movie.rs` | Per-drive stitched "movie" artifacts: all of a camera's segments concatenated (ffmpeg `concat:` protocol — raw HEVC + TS byte-concatenate cleanly, no temp) and encoded **once** into a single seekable H.264 MP4 with qcamera's audio muxed in. qcamera is re-encoded to constant 20fps too (a stream copy is variable-rate across segment joins → browsers ignore playbackRate); HEVC cams encoded (same VAAPI/CPU choice as transcode). Route-level blob `{dongle}_{ts}--movie--{cam}.mp4`; `movies` table (mig 0008) tracks freshness (built `seg_count`). `spawn` runs a `sweep` that builds any drive fully covered by a camera but missing/stale — eager, background. On/off + interval + encode settings (resolution `movie_scale` native/854/640, quality `movie_crf` → x264 crf and VAAPI `qp=crf+5`, `movie_preset`) are runtime settings (enable/interval seeded from `HC_MOVIE_ENABLED`/`HC_MOVIE_INTERVAL_SECS`), re-read each cycle/build and honored mid-sweep; `reencode_all` (POST `/v1/admin/encoding/reencode`) clears non-disabled movies so they rebuild with new settings — a **separate loop** from devsync, not gated by the sync toggle. The interval sleep wakes early via `MovieQueue::request_sweep`, which the devsync workers call when the pull queue drains (`stats().files == 0`) — so a freshly-synced drive starts encoding within seconds instead of waiting a full interval. `MovieQueue` (in `AppState`) tracks live progress for the header badge (`/v1/movies/queue`). `status` powers the UI; `delete` drops a movie+row (used for rebuild + when source segments are deleted); `disable` deletes the blob and sets `movies.disabled=1` so a user-deleted movie isn't auto-rebuilt (Manage data → Delete/Rebuild via `POST /v1/route/{fullname}/movie/{cam}` `{action}`). Empty/0-byte sources are skipped and unbuildable attempts marked (`movies.bytes=0`) so they aren't retried |
+| `subs.rs` | Per-drive **subtitles**: concatenates the qcamera audio (same `av_lead` silence pad as `movie.rs`, so cue times match the movie timeline), slices it into 5-minute 16 kHz mono WAV chunks, POSTs each to a whisper.cpp server (`/inference`, `response_format=vtt`), shifts + merges the cues, and stores one route-level blob `{dongle}_{ts}--subs--en.vtt`. `subs` table (mig 0010) tracks freshness/disable exactly like `movies`. Background `spawn` loop sweeps drives whose audio covers the whole drive; runtime toggle + server URL in Settings (`subs_enabled`, `whisper_url`, seeded from `HC_SUBS_ENABLED`/`HC_WHISPER_URL`). Served at `GET /v1/route/{fullname}/subs.vtt` (public-route aware, so share links keep captions); status/delete/rebuild at `GET/POST /v1/route/{fullname}/subs`; admin `GET/POST /v1/admin/subs` + `POST /v1/admin/subs/rebuild` |
 | `retention.rs` | periodic prune by age/count/size; `delete_route`; `load/save_policy` |
 | `ignore.rs` | "ignore rules" (DNF: OR of AND-conditions on per-drive `miles`/`minutes`) stored in `settings.ignore_rules`; `is_ignored` filters trivial drives out of the Drives list (`routes_segments` adds an `ignored` flag) + Stats (`my_stats`/`my_paths` skip them). **The only drive filter** — the old hardcoded GPS-less-stub filter (`start_time > 0`) was removed; stubs are 0-mile, so the default rule (`miles < 0.1`, applied when unset) hides them. Editable/removable in Settings (saving `[]` = off). Reversible, nothing deleted |
 | `api/users.rs` | login, `/v1/me`, self password change (`POST /v1/me/password`, verifies current); admin user management — `GET/POST /v1/admin/users` (list/create), `POST /v1/admin/users/{identity}` (toggle `is_admin`/email), `POST .../password` (admin reset), `DELETE .../{identity}` (delete: unclaims devices + drops shares first for FKs); the `create_user_row` CLI helper. Guard rails: never remove/delete the last admin, no self-delete. The `is_admin` flag is the whole permission model |
@@ -197,6 +198,16 @@ macros).
   image ships mesa + intel VAAPI drivers. Device is runtime-selectable (settings
   table key `transcode_device`); GPU failures fall back to CPU per-transcode. An
   entry-level discrete GPU can be slower than a modern iGPU — measure.
+- **Whisper hallucinates on silence.** Most drives have no talking at all, and a
+  bare whisper run fills the silence with looped filler ("Thanks for watching…").
+  The speech_services whisper container already defaults to Silero VAD +
+  `--suppress-nst`, which is why an empty transcript comes back as a bare
+  `WEBVTT` header — that's the correct result for a quiet drive, not a failure.
+  Audio is chunked (5 min) rather than uploaded whole: a 40-minute drive is a
+  ~75 MB WAV in one request.
+- **The whisper/denoise services are a separate compose project.** No shared
+  docker network, so prod reaches them over `host.docker.internal` (added via
+  `extra_hosts: host-gateway`) at the published port, not by service name.
 - **After parser changes**, re-run `<bin> reparse` (or `docker compose run --rm app
   reparse`) to regenerate artifacts for already-uploaded drives.
 - **The device uploader can't be repointed at us — so we PULL.** `API_HOST` is a
@@ -224,7 +235,9 @@ They use synthetic ES256 devices (openssl) and synthetic/real cereal qlogs:
 `m4_spa`, `m5_transcode`, `m6_retention`, `m7_devsync` (shared ingest core +
 idempotency; `devsync.rs` also has inline unit tests for the realdata path parser
 and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
-`m_transcode_device`. Run the full suite before deploying.
+`m_transcode_device`, `m_subs` (subtitle status/serve/delete + public-share
+access; `subs.rs` has inline unit tests for the VTT parse/shift/render round trip).
+Run the full suite before deploying.
 
 ## Adding things
 
