@@ -344,3 +344,38 @@ pub async fn set_transcode(
     transcode::set_device(&state, &req.device).await?;
     Ok(Json(json!({ "ok": true, "device": req.device })))
 }
+
+/// GET /v1/admin/denoise — speech-enhancement settings (+ whether the configured
+/// DeepFilterNet server answers).
+pub async fn get_denoise(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    Ok(Json(crate::denoise::settings_json(&state).await))
+}
+
+#[derive(Deserialize)]
+pub struct DenoiseReq {
+    pub enabled: Option<bool>,
+    pub denoise_url: Option<String>,
+}
+
+/// POST /v1/admin/denoise — toggle enhancement / point at a denoise server.
+/// Existing movies keep the audio they were built with; re-encode them to pick
+/// the change up.
+pub async fn set_denoise(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<DenoiseReq>,
+) -> AppResult<Json<Value>> {
+    require_admin(&user)?;
+    if let Some(url) = req.denoise_url.as_deref() {
+        crate::denoise::set_denoise_url(&state, url).await?;
+    }
+    if let Some(on) = req.enabled {
+        crate::denoise::set_enabled(&state, on).await?;
+    }
+    tracing::info!(user = %user.username, ?req.enabled, "denoise settings updated");
+    Ok(Json(crate::denoise::settings_json(&state).await))
+}

@@ -48,6 +48,11 @@ pub struct Config {
     pub subs_enabled: bool,
     /// Base URL of the whisper.cpp `/inference` server (runtime-overridable).
     pub whisper_url: String,
+    /// Speech enhancement for a drive's audio before it's muxed into the movie:
+    /// master switch + DeepFilterNet server base URL. Off by default (it needs a
+    /// server); both have runtime settings that seed from these.
+    pub denoise_enabled: bool,
+    pub denoise_url: String,
     /// Coordination/login server for the `--tailscale` option of onboard.sh
     /// (e.g. a self-hosted headscale URL). Empty = Tailscale's default coordination
     /// server. Not a secret (a public hostname); the per-device authkey is passed
@@ -80,6 +85,8 @@ impl Config {
             movie_interval_secs: env_or("HC_MOVIE_INTERVAL_SECS", "120").parse().unwrap_or(120),
             subs_enabled: env_or("HC_SUBS_ENABLED", "false").parse().unwrap_or(false),
             whisper_url: trim_trailing_slash(env_or("HC_WHISPER_URL", "http://127.0.0.1:8571")),
+            denoise_enabled: env_or("HC_DENOISE_ENABLED", "false").parse().unwrap_or(false),
+            denoise_url: trim_trailing_slash(env_or("HC_DENOISE_URL", "http://127.0.0.1:8573")),
             tailnet_login_server: trim_trailing_slash(env_or("HC_TAILNET_LOGIN_SERVER", "")),
         }
     }

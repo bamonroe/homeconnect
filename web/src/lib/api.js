@@ -121,6 +121,9 @@ export const api = {
   subsSettings: () => req('GET', '/v1/admin/subs'),
   setSubsSettings: (p) => req('POST', '/v1/admin/subs', p),
   rebuildSubs: () => req('POST', '/v1/admin/subs/rebuild'),
+  // Speech enhancement applied to a drive's audio before it's muxed into a movie.
+  denoiseSettings: () => req('GET', '/v1/admin/denoise'),
+  setDenoiseSettings: (p) => req('POST', '/v1/admin/denoise', p),
   // admin: retention
   retention: () => req('GET', '/v1/admin/retention'),
   setRetention: (p) => req('POST', '/v1/admin/retention', p),

@@ -319,20 +319,34 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
     let tmp_s = tmp.to_string_lossy().to_string();
 
     let v_in = concat_input(&v_paths);
-    let a_in = concat_input(&a_paths);
     let have_audio = !a_paths.is_empty();
     // The comma's mic starts a couple seconds after the camera on the FIRST segment
     // of a drive (later segments are aligned). Concatenating audio separately drops
     // that lead-in, shifting the whole track early — so delay the audio input by the
     // first segment's measured audio-vs-video gap to realign it.
-    let lead = if have_audio { av_lead(&a_paths[0]).await } else { 0.0 };
+    let mut lead = if have_audio { av_lead(&a_paths[0]).await } else { 0.0 };
+
+    // Optional speech enhancement: the raw track is mostly road and wind noise.
+    // The cleaned WAV already carries the lead-in silence, so no further delay —
+    // and it's a separate input, so even the qcamera movie (whose audio normally
+    // rides along with its own video) takes the enhanced track.
+    let work = crate::denoise::workdir(state, &fullname);
+    let clean = crate::denoise::build_wav(state, &a_paths, lead, &work).await;
+    let a_in = match &clean {
+        Some(p) => {
+            lead = 0.0;
+            p.to_string_lossy().to_string()
+        }
+        None => concat_input(&a_paths),
+    };
+    let denoised = clean.is_some();
 
     let ok = if cam == "qcamera" {
         // qcamera.ts is H.264+AAC, but concatenating segments yields irregular
         // (variable-rate) timestamps that make browsers ignore playbackRate — so
-        // re-encode to constant 20fps rather than stream-copy. A/V come from the
-        // same input, so the intrinsic mic offset stays aligned.
-        run(state, qcamera_args(&v_in, &tmp_s)).await
+        // re-encode to constant 20fps rather than stream-copy. Without enhancement
+        // A/V come from the same input, so the intrinsic mic offset stays aligned.
+        run(state, qcamera_args(&v_in, &a_in, denoised, &tmp_s)).await
     } else {
         // Encode HEVC → H.264 per the configured encode settings; prefer the
         // selected GPU, fall back to CPU.
@@ -353,6 +367,9 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
         }
         ok
     };
+
+    // The enhanced WAV is only needed for this encode.
+    crate::denoise::cleanup(&work).await;
 
     if !ok {
         let _ = tokio::fs::remove_file(&tmp).await;
@@ -433,18 +450,29 @@ async fn record(state: &AppState, fullname: &str, cam: &str, seg_count: i64, byt
 /// stream copy would be variable-rate across segment boundaries, which breaks
 /// browser playbackRate). Video + audio come from the one input so the mic offset
 /// stays aligned. CPU libx264 — the qcamera frame is small, so it's cheap.
-fn qcamera_args(v_in: &str, out: &str) -> Vec<String> {
-    [
-        "-nostdin", "-y", "-fflags", "+genpts", "-i", v_in,
-        "-map", "0:v:0", "-map", "0:a:0?",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-        "-fps_mode", "cfr", "-r", FPS,
-        "-c:a", "aac", "-b:a", "96k",
-        "-movflags", "+faststart", out,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
+fn qcamera_args(v_in: &str, a_in: &str, denoised: bool, out: &str) -> Vec<String> {
+    let mut a: Vec<String> = ["-nostdin", "-y", "-fflags", "+genpts", "-i", v_in]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    if denoised {
+        // Enhanced audio is a second input (already lead-compensated).
+        a.extend(["-i".to_string(), a_in.to_string()]);
+        a.extend(["-map", "0:v:0", "-map", "1:a:0"].iter().map(|s| s.to_string()));
+    } else {
+        a.extend(["-map", "0:v:0", "-map", "0:a:0?"].iter().map(|s| s.to_string()));
+    }
+    a.extend(
+        [
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+            "-fps_mode", "cfr", "-r", FPS,
+            "-c:a", "aac", "-b:a", "96k",
+            "-movflags", "+faststart", out,
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+    a
 }
 
 /// GPU pipeline: encode H.264 with the selected backend, muxing the concatenated

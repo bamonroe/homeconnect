@@ -12,6 +12,7 @@ pub mod config;
 pub mod db;
 pub mod device_params;
 pub mod device_ssh;
+pub mod denoise;
 pub mod devsync;
 pub mod error;
 pub mod ignore;
@@ -109,6 +110,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/encoding", get(api::settings::get_encoding).post(api::settings::set_encoding))
         .route("/v1/admin/encoding/reencode", post(api::settings::reencode_movies))
         .route("/v1/admin/subs", get(api::settings::get_subs).post(api::settings::set_subs))
+        .route("/v1/admin/denoise", get(api::settings::get_denoise).post(api::settings::set_denoise))
         .route("/v1/admin/subs/rebuild", post(api::settings::rebuild_subs))
         .route("/v1/admin/cam-calib", get(api::settings::get_cam_calib).post(api::settings::set_cam_calib))
         .route("/v1/admin/ignore-rules", get(api::settings::get_ignore_rules).post(api::settings::set_ignore_rules))

@@ -10,6 +10,7 @@
   let sync = $state(null); // { enabled, interval_secs, types:[], all_types:[] }
   let encode = $state(null); // { enabled, interval_secs }
   let subs = $state(null); // { enabled, whisper_url, reachable, transcribed }
+  let denoise = $state(null); // { enabled, denoise_url, reachable }
   let ignoreRules = $state([]); // [{ conditions: [{field, op, value}] }]
   let ignoreMsg = $state('');
 
@@ -17,11 +18,11 @@
     error = '';
     try {
       // Fetch concurrently — one round trip instead of several sequential ones.
-      const [c, t, s, e, ir, sb] = await Promise.all([
+      const [c, t, s, e, ir, sb, dn] = await Promise.all([
         api.retention(), api.transcode(), api.syncSettings(), api.encodingSettings(), api.ignoreRules(),
-        api.subsSettings(),
+        api.subsSettings(), api.denoiseSettings(),
       ]);
-      cfg = c; tc = t; sync = s; encode = e; ignoreRules = ir.rules || []; subs = sb;
+      cfg = c; tc = t; sync = s; encode = e; ignoreRules = ir.rules || []; subs = sb; denoise = dn;
     } catch (e) {
       error = e.message;
     }
@@ -164,6 +165,34 @@
     } catch (err) {
       error = err.message;
       e.currentTarget.checked = !on;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function toggleDenoise(e) {
+    const on = e.currentTarget.checked;
+    busy = true; error = ''; msg = '';
+    try {
+      denoise = await api.setDenoiseSettings({ enabled: on });
+      msg = on
+        ? 'Noise reduction turned on — re-encode a movie to hear it.'
+        : 'Noise reduction turned off.';
+    } catch (err) {
+      error = err.message;
+      e.currentTarget.checked = !on;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function saveDenoiseUrl() {
+    busy = true; error = ''; msg = '';
+    try {
+      denoise = await api.setDenoiseSettings({ denoise_url: denoise.denoise_url });
+      msg = denoise.reachable ? 'Denoise server saved and reachable.' : 'Saved, but the denoise server did not answer.';
+    } catch (err) {
+      error = err.message;
     } finally {
       busy = false;
     }
@@ -365,6 +394,30 @@
         <div class="actions">
           <button disabled={busy} onclick={saveEncodeQuality}>Save quality</button>
           <button class="ghost" disabled={busy} onclick={reencodeAll}>Re-encode all movies</button>
+        </div>
+      </div>
+    {/if}
+
+    {#if denoise}
+      <div class="card">
+        <h3>Noise reduction</h3>
+        <p class="muted small">
+          Clean up a drive's audio before it's muxed into the movie — the microphone is mostly
+          road, wind and fan noise. Applies when a movie is encoded, so existing movies keep the
+          audio they were built with; use <b>Re-encode all movies</b> above to redo them.
+        </p>
+        <label class="toggle">
+          <input type="checkbox" checked={denoise.enabled} disabled={busy} onchange={toggleDenoise} />
+          <span>{denoise.enabled ? 'On' : 'Off'}</span>
+        </label>
+        <label>Denoise server URL
+          <input type="text" bind:value={denoise.denoise_url} disabled={busy} placeholder="http://127.0.0.1:8573" />
+        </label>
+        <p class="muted small">
+          {denoise.reachable ? '✓ Reachable.' : '✕ Not answering — check the URL and that the container is up.'}
+        </p>
+        <div class="actions">
+          <button disabled={busy} onclick={saveDenoiseUrl}>Save server</button>
         </div>
       </div>
     {/if}
