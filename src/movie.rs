@@ -438,7 +438,7 @@ fn qcamera_args(v_in: &str, out: &str) -> Vec<String> {
         "-nostdin", "-y", "-fflags", "+genpts", "-i", v_in,
         "-map", "0:v:0", "-map", "0:a:0?",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-        "-vsync", "cfr", "-r", FPS,
+        "-fps_mode", "cfr", "-r", FPS,
         "-c:a", "aac", "-b:a", "96k",
         "-movflags", "+faststart", out,
     ]
