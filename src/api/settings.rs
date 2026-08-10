@@ -18,6 +18,16 @@ fn require_admin(user: &crate::models::User) -> AppResult<()> {
     Ok(())
 }
 
+/// Distinguish "field absent" (leave alone) from an explicit `null` (clear it):
+/// plain `Option` collapses both to `None`, so nesting one keeps them apart.
+fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
+}
+
 /// GET /v1/admin/retention — current policy + storage usage.
 pub async fn get_retention(
     State(state): State<AppState>,
@@ -359,6 +369,9 @@ pub async fn get_denoise(
 pub struct DenoiseReq {
     pub enabled: Option<bool>,
     pub denoise_url: Option<String>,
+    /// Denoise strength cap in dB; `Some(None)` clears it (full enhancement).
+    #[serde(default, deserialize_with = "crate::api::settings::double_option")]
+    pub atten_db: Option<Option<f64>>,
 }
 
 /// POST /v1/admin/denoise — toggle enhancement / point at a denoise server.
@@ -375,6 +388,9 @@ pub async fn set_denoise(
     }
     if let Some(on) = req.enabled {
         crate::denoise::set_enabled(&state, on).await?;
+    }
+    if let Some(atten) = req.atten_db {
+        crate::denoise::set_atten_db(&state, atten).await?;
     }
     tracing::info!(user = %user.username, ?req.enabled, "denoise settings updated");
     Ok(Json(crate::denoise::settings_json(&state).await))

@@ -26,6 +26,7 @@ use crate::state::AppState;
 /// settings-table keys for the runtime toggle + endpoint.
 const ENABLED_KEY: &str = "denoise_enabled";
 const URL_KEY: &str = "denoise_url";
+const ATTEN_KEY: &str = "denoise_atten_db";
 
 /// How much audio goes in one enhancement request (seconds).
 const CHUNK_SECS: f64 = 300.0;
@@ -67,6 +68,30 @@ pub async fn set_denoise_url(state: &AppState, url: &str) -> AppResult<()> {
     crate::settings::set(state, URL_KEY, url).await
 }
 
+/// How hard to denoise, as DeepFilterNet's `atten_lim_db` — the maximum amount of
+/// noise the model may subtract. Lower is gentler and keeps more of the original
+/// (road noise included); `None` means full enhancement, which on a car mic can
+/// chew into the speech itself. Runtime setting, seeded from `HC_DENOISE_ATTEN_DB`.
+pub async fn atten_db(state: &AppState) -> Option<f64> {
+    match crate::settings::get(state, ATTEN_KEY).await {
+        Some(s) => s.trim().parse().ok(),
+        None => state.config.denoise_atten_db,
+    }
+}
+
+/// `None`/empty clears the limit (full enhancement). The service takes dB of
+/// attenuation, so only non-negative values mean anything.
+pub async fn set_atten_db(state: &AppState, db: Option<f64>) -> AppResult<()> {
+    let v = match db {
+        Some(v) if !(0.0..=100.0).contains(&v) => {
+            return Err(AppError::BadRequest("denoise attenuation must be 0-100 dB".into()));
+        }
+        Some(v) => v.to_string(),
+        None => String::new(),
+    };
+    crate::settings::set(state, ATTEN_KEY, &v).await
+}
+
 /// Is the server up? Used by the Settings page so a misconfigured URL is obvious
 /// before a sweep silently falls back to raw audio.
 pub async fn probe(state: &AppState) -> bool {
@@ -91,6 +116,7 @@ pub async fn settings_json(state: &AppState) -> Value {
     json!({
         "enabled": is_enabled(state).await,
         "denoise_url": denoise_url(state).await,
+        "atten_db": atten_db(state).await,
         "reachable": probe(state).await,
     })
 }
@@ -115,6 +141,7 @@ pub async fn build_wav(
     if url.is_empty() {
         return None;
     }
+    let atten = atten_db(state).await;
     if tokio::fs::create_dir_all(dir).await.is_err() {
         return None;
     }
@@ -140,7 +167,7 @@ pub async fn build_wav(
             break;
         }
         let clean = dir.join(format!("clean-{}.wav", offset as i64));
-        match enhance(&client, &url, &chunk, &clean).await {
+        match enhance(&client, &url, atten, &chunk, &clean).await {
             Ok(()) => parts.push(clean),
             Err(e) => {
                 tracing::warn!("denoise: {e} — falling back to raw audio");
@@ -232,9 +259,11 @@ async fn concat_wavs(parts: &[std::path::PathBuf], out: &std::path::Path, dir: &
 }
 
 /// POST one WAV chunk to the DeepFilterNet server and write the cleaned WAV back.
+/// `atten` caps how much noise the model subtracts; omitted = full enhancement.
 async fn enhance(
     client: &reqwest::Client,
     url: &str,
+    atten: Option<f64>,
     src: &std::path::Path,
     out: &std::path::Path,
 ) -> anyhow::Result<()> {
@@ -243,7 +272,11 @@ async fn enhance(
         .file_name("audio.wav")
         .mime_str("audio/wav")?;
     let form = reqwest::multipart::Form::new().part("file", part);
-    let resp = client.post(format!("{url}/denoise")).multipart(form).send().await?;
+    let endpoint = match atten {
+        Some(db) => format!("{url}/denoise?atten_lim_db={db}"),
+        None => format!("{url}/denoise"),
+    };
+    let resp = client.post(endpoint).multipart(form).send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("denoise server returned {}", resp.status());
     }

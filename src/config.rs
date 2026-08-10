@@ -53,6 +53,8 @@ pub struct Config {
     /// server); both have runtime settings that seed from these.
     pub denoise_enabled: bool,
     pub denoise_url: String,
+    /// Denoise strength cap (DeepFilterNet `atten_lim_db`); `None` = full.
+    pub denoise_atten_db: Option<f64>,
     /// Coordination/login server for the `--tailscale` option of onboard.sh
     /// (e.g. a self-hosted headscale URL). Empty = Tailscale's default coordination
     /// server. Not a secret (a public hostname); the per-device authkey is passed
@@ -87,6 +89,9 @@ impl Config {
             whisper_url: trim_trailing_slash(env_or("HC_WHISPER_URL", "http://127.0.0.1:8571")),
             denoise_enabled: env_or("HC_DENOISE_ENABLED", "false").parse().unwrap_or(false),
             denoise_url: trim_trailing_slash(env_or("HC_DENOISE_URL", "http://127.0.0.1:8573")),
+            denoise_atten_db: std::env::var("HC_DENOISE_ATTEN_DB")
+                .ok()
+                .and_then(|v| v.trim().parse().ok()),
             tailnet_login_server: trim_trailing_slash(env_or("HC_TAILNET_LOGIN_SERVER", "")),
         }
     }

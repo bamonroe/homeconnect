@@ -189,7 +189,12 @@
   async function saveDenoiseUrl() {
     busy = true; error = ''; msg = '';
     try {
-      denoise = await api.setDenoiseSettings({ denoise_url: denoise.denoise_url });
+      // '' means "no limit" — send an explicit null so the server clears it.
+      const raw = String(denoise.atten_db ?? '').trim();
+      denoise = await api.setDenoiseSettings({
+        denoise_url: denoise.denoise_url,
+        atten_db: raw === '' ? null : Number(raw),
+      });
       msg = denoise.reachable ? 'Denoise server saved and reachable.' : 'Saved, but the denoise server did not answer.';
     } catch (err) {
       error = err.message;
@@ -415,6 +420,15 @@
         </label>
         <p class="muted small">
           {denoise.reachable ? '✓ Reachable.' : '✕ Not answering — check the URL and that the container is up.'}
+        </p>
+        <label>Strength (attenuation limit, dB)
+          <input type="number" min="0" max="100" step="1" bind:value={denoise.atten_db}
+                 disabled={busy} placeholder="full" />
+        </label>
+        <p class="muted small">
+          The most noise the model is allowed to subtract. Blank = full strength, which can
+          scrub the speech along with the road noise; a lower number is gentler and keeps more
+          of the original. Try 12–20 dB if voices sound hollow or over-processed.
         </p>
         <div class="actions">
           <button disabled={busy} onclick={saveDenoiseUrl}>Save server</button>
