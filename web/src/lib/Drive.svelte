@@ -4,7 +4,7 @@
   // marker + telemetry HUD driven off the video clock, and the optional model
   // overlay / top-down / graph panes (movable + resizable, layout persisted). All
   // {t,…} series are video-relative seconds; findNearest maps the clock to a sample.
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   // maplibre-gl (~250 KB) and hls.js (~150 KB) are loaded on demand in onMount so
   // the Login/Drives views don't pull them; assigned to these once imported.
   let maplibregl;
@@ -390,6 +390,15 @@
   // attribute only sets the initial state).
   function toggleSubs() {
     subsOn = !subsOn;
+    applySubsMode();
+  }
+
+  // `default` on a <track> is only honoured when the track exists as the media
+  // element is created — ours is added later (subs status is fetched async), so
+  // the browser leaves the TextTrack disabled and nothing renders. Set the mode
+  // explicitly once the track is attached, and again after each src change.
+  async function applySubsMode() {
+    await tick(); // the <track> is rendered from async-loaded state
     const t = videoEl?.textTracks?.[0];
     if (t) t.mode = subsOn ? 'showing' : 'disabled';
   }
@@ -405,6 +414,7 @@
       videoEl.muted = false;
       videoEl.src = api.movieUrl(route.fullname, cam);
       videoEl.playbackRate = rate;
+      applySubsMode();
       return;
     }
     movieMode = false;
@@ -427,6 +437,7 @@
     } else {
       error = 'HLS playback not supported in this browser.';
     }
+    applySubsMode();
   }
 
   // Separate audio track (extracted from qcamera) played in sync with the
