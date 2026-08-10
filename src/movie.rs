@@ -339,34 +339,28 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
         }
         None => concat_input(&a_paths),
     };
-    let denoised = clean.is_some();
 
-    let ok = if cam == "qcamera" {
-        // qcamera.ts is H.264+AAC, but concatenating segments yields irregular
-        // (variable-rate) timestamps that make browsers ignore playbackRate — so
-        // re-encode to constant 20fps rather than stream-copy. Without enhancement
-        // A/V come from the same input, so the intrinsic mic offset stays aligned.
-        run(state, qcamera_args(&v_in, &a_in, denoised, &tmp_s)).await
-    } else {
-        // Encode HEVC → H.264 per the configured encode settings; prefer the
-        // selected GPU, fall back to CPU.
-        let opts = encode_opts(state).await;
-        let device = transcode::current_device(state).await;
-        let mut ok = false;
-        if let Some(dev) = &device {
-            let backend = transcode::gpu_backend(dev).await;
-            ok = run(state, gpu_args(&backend, &v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
-            // Don't fall back to CPU on an abort (disable) — only on a real GPU failure.
-            if !ok && is_enabled(state).await {
-                tracing::warn!(%cam, ?backend, "movie GPU encode failed; falling back to CPU");
-                let _ = tokio::fs::remove_file(&tmp).await;
-            }
-        }
+    // Every camera takes the same path: decode + encode on the selected GPU, fall
+    // back to CPU only if that fails. qcamera differs solely in what its input is
+    // (H.264 in MPEG-TS rather than a raw HEVC stream) — see `Src`. It always gets
+    // its audio as a separate input, so a re-concatenated (or enhanced) track is
+    // realigned by `lead` exactly like the full-res cameras'.
+    let src = if cam == "qcamera" { Src::Qcam } else { Src::Hevc };
+    let opts = encode_opts(state).await;
+    let device = transcode::current_device(state).await;
+    let mut ok = false;
+    if let Some(dev) = &device {
+        let backend = transcode::gpu_backend(dev).await;
+        ok = run(state, gpu_args(&backend, src, &v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
+        // Don't fall back to CPU on an abort (disable) — only on a real GPU failure.
         if !ok && is_enabled(state).await {
-            ok = run(state, cpu_args(&v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
+            tracing::warn!(%cam, ?backend, "movie GPU encode failed; falling back to CPU");
+            let _ = tokio::fs::remove_file(&tmp).await;
         }
-        ok
-    };
+    }
+    if !ok && is_enabled(state).await {
+        ok = run(state, cpu_args(src, &v_in, &a_in, have_audio, lead, &opts, &tmp_s)).await;
+    }
 
     // The enhanced WAV is only needed for this encode.
     crate::denoise::cleanup(&work).await;
@@ -446,55 +440,65 @@ async fn record(state: &AppState, fullname: &str, cam: &str, seg_count: i64, byt
     .await;
 }
 
-/// qcamera: re-encode the concatenated H.264+AAC to a constant-20fps MP4 (a plain
-/// stream copy would be variable-rate across segment boundaries, which breaks
-/// browser playbackRate). Video + audio come from the one input so the mic offset
-/// stays aligned. CPU libx264 — the qcamera frame is small, so it's cheap.
-fn qcamera_args(v_in: &str, a_in: &str, denoised: bool, out: &str) -> Vec<String> {
-    let mut a: Vec<String> = ["-nostdin", "-y", "-fflags", "+genpts", "-i", v_in]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    if denoised {
-        // Enhanced audio is a second input (already lead-compensated).
-        a.extend(["-i".to_string(), a_in.to_string()]);
-        a.extend(["-map", "0:v:0", "-map", "1:a:0"].iter().map(|s| s.to_string()));
-    } else {
-        a.extend(["-map", "0:v:0", "-map", "0:a:0?"].iter().map(|s| s.to_string()));
-    }
-    a.extend(
-        [
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-            "-fps_mode", "cfr", "-r", FPS,
-            "-c:a", "aac", "-b:a", "96k",
-            "-movflags", "+faststart", out,
-        ]
-        .iter()
-        .map(|s| s.to_string()),
-    );
-    a
+/// What the concatenated video input actually is. The full-res cameras are raw
+/// HEVC elementary streams — no container, no timestamps, so the frame rate has
+/// to be asserted on the *input*. qcamera is H.264 in MPEG-TS, which carries its
+/// own (irregular) timestamps, so it's made constant on the *output* instead.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Src {
+    Hevc,
+    Qcam,
 }
 
-/// GPU pipeline: encode H.264 with the selected backend, muxing the concatenated
+impl Src {
+    /// Input-side flags: force the raw stream's format + rate, or let the
+    /// container's own timestamps through.
+    fn input_args(&self) -> Vec<String> {
+        match self {
+            Src::Hevc => ["-r", FPS, "-f", "hevc"].iter().map(|s| s.to_string()).collect(),
+            Src::Qcam => Vec::new(),
+        }
+    }
+
+    /// The CUVID decoder for this codec (NVENC path decodes on the GPU too).
+    fn cuvid(&self) -> &'static str {
+        match self {
+            Src::Hevc => "hevc_cuvid",
+            Src::Qcam => "h264_cuvid",
+        }
+    }
+
+    /// Output-side flags: a container source needs pinning to constant rate, or
+    /// browsers ignore `<video>.playbackRate` on the result.
+    fn output_args(&self) -> Vec<String> {
+        match self {
+            Src::Hevc => Vec::new(),
+            Src::Qcam => ["-fps_mode", "cfr", "-r", FPS].iter().map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
+/// GPU pipeline: encode with the selected backend, muxing the concatenated
 /// qcamera audio when present. `lead` delays the audio input to realign the
 /// first-segment mic-startup gap.
-fn gpu_args(backend: &transcode::GpuBackend, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
+fn gpu_args(backend: &transcode::GpuBackend, src: Src, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
     match backend {
-        transcode::GpuBackend::Vaapi { dev } => vaapi_args(dev, v_in, a_in, audio, lead, opts, out),
-        transcode::GpuBackend::Nvenc => nvenc_args(v_in, a_in, audio, lead, opts, out),
+        transcode::GpuBackend::Vaapi { dev } => vaapi_args(dev, src, v_in, a_in, audio, lead, opts, out),
+        transcode::GpuBackend::Nvenc => nvenc_args(src, v_in, a_in, audio, lead, opts, out),
     }
 }
 
-/// Decode the concatenated HEVC + encode H.264 on VAAPI.
-fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
+/// Decode the concatenated source + encode H.264 on VAAPI.
+fn vaapi_args(dev: &str, src: Src, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
     let mut a: Vec<String> = vec![
         "-nostdin", "-y",
         "-hwaccel", "vaapi", "-hwaccel_device", dev, "-hwaccel_output_format", "vaapi",
-        "-r", FPS, "-f", "hevc", "-i", v_in,
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
+    a.extend(src.input_args());
+    a.extend(["-i", v_in].iter().map(|s| s.to_string()));
     if audio {
         a.extend(["-i", a_in].iter().map(|s| s.to_string()));
     }
@@ -508,6 +512,7 @@ fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &
             .iter()
             .map(|s| s.to_string()),
     );
+    a.extend(src.output_args());
     if audio {
         a.extend(["-map", "1:a:0?", "-c:a", "aac", "-b:a", "96k"].iter().map(|s| s.to_string()));
         if lead > 0.01 {
@@ -524,14 +529,13 @@ fn vaapi_args(dev: &str, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &
 /// Decode HEVC with CUVID and encode AV1 with Nvidia NVENC (Ada+ has an AV1
 /// encoder — ~30-50% smaller than H.264 at the same quality). The AV1 stream is
 /// muxed into MP4 (`av01`), which the Drive `<video>` plays on modern browsers.
-fn nvenc_args(v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
-    let mut a: Vec<String> = vec![
-        "-nostdin", "-y", "-fflags", "+genpts", "-r", FPS,
-        "-c:v", "hevc_cuvid", "-f", "hevc", "-i", v_in,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
+fn nvenc_args(src: Src, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
+    let mut a: Vec<String> = vec!["-nostdin", "-y", "-fflags", "+genpts"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    a.extend(src.input_args());
+    a.extend(["-c:v", src.cuvid(), "-i", v_in].iter().map(|s| s.to_string()));
     if audio {
         a.extend(["-i", a_in].iter().map(|s| s.to_string()));
     }
@@ -544,6 +548,7 @@ fn nvenc_args(v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts,
             .iter()
             .map(|s| s.to_string()),
     );
+    a.extend(src.output_args());
     if audio {
         a.extend(["-map", "1:a:0?", "-c:a", "aac", "-b:a", "96k"].iter().map(|s| s.to_string()));
         if lead > 0.01 {
@@ -557,13 +562,13 @@ fn nvenc_args(v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts,
 
 /// CPU pipeline (libx264 veryfast crf23) with the same audio mux. `lead` delays the
 /// audio input to realign the first-segment mic-startup gap.
-fn cpu_args(v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
-    let mut a: Vec<String> = vec![
-        "-nostdin", "-y", "-fflags", "+genpts", "-r", FPS, "-f", "hevc", "-i", v_in,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
+fn cpu_args(src: Src, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, out: &str) -> Vec<String> {
+    let mut a: Vec<String> = vec!["-nostdin", "-y", "-fflags", "+genpts"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    a.extend(src.input_args());
+    a.extend(["-i", v_in].iter().map(|s| s.to_string()));
     if audio {
         a.extend(["-i", a_in].iter().map(|s| s.to_string()));
     }
@@ -576,6 +581,7 @@ fn cpu_args(v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &EncodeOpts, o
             .iter()
             .map(|s| s.to_string()),
     );
+    a.extend(src.output_args());
     if audio {
         a.extend(["-map", "1:a:0?", "-c:a", "aac", "-b:a", "96k"].iter().map(|s| s.to_string()));
         if lead > 0.01 {
