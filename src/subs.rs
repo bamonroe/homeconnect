@@ -146,7 +146,20 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str) -> AppResult<usize>
     let lead = crate::movie::av_lead(&paths[0]).await;
     let dir = tempdir(state, &fullname).await?;
     let wav = dir.join("audio.wav");
-    if !extract_wav(&paths, lead, &wav).await {
+
+    // Prefer enhanced audio: whisper hallucinates filler out of road/wind noise,
+    // so the same cleanup the movie gets makes for far fewer invented cues. The
+    // denoiser bakes in the same `lead`, so the timeline is unchanged either way.
+    // Its scratch dir lives under ours so a concurrent movie build can't collide.
+    // Anything short of success falls back to the raw track — noisy captions beat
+    // no captions.
+    let clean = crate::denoise::build_wav(state, &paths, lead, &dir.join("denoise")).await;
+    let ok = match &clean {
+        Some(src) => resample_wav(src, &wav).await,
+        None => extract_wav(&paths, lead, &wav).await,
+    };
+    crate::denoise::cleanup(&dir.join("denoise")).await;
+    if !ok {
         cleanup(&dir).await;
         record(state, &fullname, seg_count, 0, 0).await;
         return Err(AppError::Other(anyhow::anyhow!("audio extract failed for {fullname}")));
@@ -229,6 +242,20 @@ async fn extract_wav(paths: &[String], lead: f64, out: &std::path::Path) -> bool
         ["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"].iter().map(|s| s.to_string()),
     );
     args.push(out.to_string_lossy().to_string());
+    run_ffmpeg(args, EXTRACT_TIMEOUT).await && nonempty(out).await
+}
+
+/// Convert the enhanced WAV (48 kHz, DeepFilterNet's native rate) down to the
+/// 16 kHz mono whisper wants. The lead silence is already baked in upstream.
+async fn resample_wav(src: &std::path::Path, out: &std::path::Path) -> bool {
+    let args: Vec<String> = vec![
+        "-nostdin".into(), "-y".into(),
+        "-i".into(), src.to_string_lossy().to_string(),
+        "-vn".into(),
+        "-ac".into(), "1".into(), "-ar".into(), "16000".into(),
+        "-c:a".into(), "pcm_s16le".into(),
+        out.to_string_lossy().to_string(),
+    ];
     run_ffmpeg(args, EXTRACT_TIMEOUT).await && nonempty(out).await
 }
 
