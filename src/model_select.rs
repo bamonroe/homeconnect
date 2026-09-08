@@ -21,6 +21,25 @@ use crate::state::AppState;
 /// Unlikely-to-collide delimiter between the three param dumps.
 const SEP: &str = "__HCmodelsep__";
 
+/// The bundle's display folder. The live cache stores `overrides` as an object
+/// (`{"folder": "Legacy Models", …}`); older/other dumps use a `[{key,value}]`
+/// list — accept both, else every model lands in one unnamed group.
+fn overrides_folder(ov: &Value) -> Option<&str> {
+    match ov {
+        Value::Object(m) => m.get("folder").and_then(Value::as_str),
+        Value::Array(arr) => arr
+            .iter()
+            .find(|e| e.get("key").and_then(Value::as_str) == Some("folder"))
+            .and_then(|e| e.get("value").and_then(Value::as_str)),
+        _ => None,
+    }
+}
+
+/// `generation` is a JSON *string* ("12") in the cache — take either form.
+fn as_loose_i64(v: &Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
 /// Read the active model + the selectable catalog + any in-flight selection.
 pub async fn get_models(state: &AppState, addr: &str) -> AppResult<Value> {
     let cmd = format!(
@@ -51,22 +70,14 @@ pub async fn get_models(state: &AppState, addr: &str) -> AppResult<Value> {
             let Some(name) = b.get("display_name").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
                 continue;
             };
-            let folder = b
-                .get("overrides")
-                .and_then(Value::as_array)
-                .and_then(|arr| {
-                    arr.iter()
-                        .find(|ov| ov.get("key").and_then(Value::as_str) == Some("folder"))
-                        .and_then(|ov| ov.get("value").and_then(Value::as_str))
-                })
-                .unwrap_or("");
+            let folder = b.get("overrides").and_then(overrides_folder).unwrap_or("");
             available.push(json!({
                 "index": b.get("index").and_then(Value::as_i64),
                 "ref": b.get("ref").and_then(Value::as_str).unwrap_or(""),
                 "name": name,
                 "short": b.get("short_name").and_then(Value::as_str).unwrap_or(""),
                 "folder": folder,
-                "gen": b.get("generation").and_then(Value::as_i64),
+                "gen": b.get("generation").and_then(as_loose_i64),
             }));
         }
     }
