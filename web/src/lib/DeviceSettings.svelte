@@ -142,7 +142,17 @@
     return s.depends_on.values.includes(cur);
   }
 
-  $effect(() => { loadDevices(); });
+  // Keep the online dot honest while the page sits open — a reboot started from
+  // the Software section below changes it within ~40s.
+  async function refreshDeviceDots() {
+    try { devices = await api.devices(); } catch {}
+  }
+
+  $effect(() => {
+    loadDevices();
+    const t = setInterval(refreshDeviceDots, 15000);
+    return () => clearInterval(t);
+  });
 </script>
 
 <div class="page">

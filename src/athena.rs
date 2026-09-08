@@ -1,7 +1,8 @@
 //! Athena: the device's outbound websocket. The comma dials out to us (it's
 //! behind cellular NAT), so this is a reverse tunnel. In v1 we use it purely
 //! for liveness: keep the socket open, Ping every 10s, and treat a recent
-//! Pong/`last_athena_ping` as "online". The JSON-RPC command bridge
+//! Pong/`last_athena_ping` as "online" — liveness comes only from frames the
+//! device sent us, never from our own successful sends. The JSON-RPC command bridge
 //! (reboot/snapshot/nav) is deferred.
 
 use std::collections::HashMap;
@@ -114,9 +115,11 @@ async fn handle_socket(socket: WebSocket, dongle_id: String, state: AppState) {
         socket.split()
     };
 
-    // Outbound: ping every 10s.
-    let ping_state = state.clone();
-    let ping_dongle = dongle_id.clone();
+    // Last time the device sent us anything (unix seconds), shared by both tasks.
+    let last_seen = Arc::new(std::sync::atomic::AtomicI64::new(now_secs()));
+
+    // Outbound: ping every 10s, and hang up if the device has gone quiet.
+    let ping_seen = last_seen.clone();
     let mut ping_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
         loop {
@@ -125,9 +128,20 @@ async fn handle_socket(socket: WebSocket, dongle_id: String, state: AppState) {
             if sender.send(Message::Ping(axum::body::Bytes::new())).await.is_err() {
                 break;
             }
-            // A successful ping send is enough to refresh liveness; pongs also
-            // refresh it below.
-            touch_ping(&ping_state, &ping_dongle).await;
+            // The send succeeding proves nothing (see below), so drop the socket
+            // ourselves once nothing has come back for a while. Otherwise a dead
+            // connection lingers until TCP gives up, minutes later, and the
+            // device can't re-establish cleanly.
+            if now_secs() - ping_seen.load(std::sync::atomic::Ordering::Relaxed) > OFFLINE_AFTER_SECS {
+                break;
+            }
+            // Deliberately do NOT refresh liveness here. A send only reaches the
+            // kernel socket buffer, so it keeps succeeding for minutes after the
+            // device has vanished (abrupt power-off, reboot, dead wifi) — TCP
+            // retransmits silently. Refreshing on send therefore pinned devices
+            // "online" through a reboot and starved the stale reaper, which only
+            // fires when `last_athena_ping` goes stale. Only frames the device
+            // actually sent back count as liveness; see the receive task.
         }
     });
 
@@ -139,7 +153,10 @@ async fn handle_socket(socket: WebSocket, dongle_id: String, state: AppState) {
         while let Some(msg) = receiver.next().await {
             match msg {
                 Ok(Message::Close(_)) | Err(_) => break,
-                Ok(_) => touch_ping(&recv_state, &recv_dongle).await,
+                Ok(_) => {
+                    last_seen.store(now_secs(), std::sync::atomic::Ordering::Relaxed);
+                    touch_ping(&recv_state, &recv_dongle).await;
+                }
             }
         }
     });

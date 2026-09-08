@@ -83,8 +83,17 @@
     return `/connectdata/${dg}/${ts}/0/sprite.jpg?sig=${getToken()}`;
   }
 
+  // The online dot goes stale otherwise: it's server state that changes without
+  // us (device reboots, drives away), so re-poll it instead of showing whatever
+  // was true when the page loaded. Devices only — routes aren't refetched.
+  async function refreshDeviceDots() {
+    try { devices = await api.devices(); } catch {}
+  }
+
   $effect(() => {
     loadDevices();
+    const t = setInterval(refreshDeviceDots, 15000);
+    return () => clearInterval(t);
   });
 </script>
 
