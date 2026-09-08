@@ -140,6 +140,9 @@ export const api = {
   // driving-model selection (sunnypilot). index < 0 = revert to default model.
   deviceModel: (dongle) => req('GET', `/v1/devices/${dongle}/model`),
   setDeviceModel: (dongle, index) => req('POST', `/v1/devices/${dongle}/model`, { index }),
+  // openpilot software updates on the device (car must be off)
+  deviceUpdate: (dongle) => req('GET', `/v1/devices/${dongle}/update`),
+  deviceUpdateAction: (dongle, body) => req('POST', `/v1/devices/${dongle}/update`, body),
   // admin: automatic-sync on/off toggle + loop interval
   syncSettings: () => req('GET', '/v1/admin/sync'),
   setSync: (patch) => req('POST', '/v1/admin/sync', patch),

@@ -23,6 +23,7 @@
   async function loadParams() {
     dp = await api.deviceParams(dev);
     loadModel();
+    loadUpdate();
   }
 
   // Driving-model selection (sunnypilot). Read live over SSH, so it needs the
@@ -65,6 +66,27 @@
       modelMsg = 'Reverted to the default model. Reboot to apply.';
       setTimeout(loadModel, 1500);
     } catch (e) { modelMsg = e.message; } finally { modelBusy = false; }
+  }
+
+  // Software updates. Read live over SSH; every action is refused by the server
+  // unless the car is off, and the UI hides them in that case too.
+  let upd = $state(null); // { online, update: {...} }
+  let updBusy = $state(false);
+  let updMsg = $state('');
+  let branchSel = $state('');
+  async function loadUpdate() {
+    updMsg = '';
+    try { upd = await api.deviceUpdate(dev); } catch { upd = null; }
+    branchSel = upd?.update?.target_branch || upd?.update?.branch || '';
+  }
+  async function updateAction(body, msg, confirmText) {
+    if (confirmText && !confirm(confirmText)) return;
+    updBusy = true; updMsg = '';
+    try {
+      await api.deviceUpdateAction(dev, body);
+      updMsg = msg;
+      setTimeout(loadUpdate, 2000);
+    } catch (e) { updMsg = e.message; } finally { updBusy = false; }
   }
 
   async function pickDevice(d) {
@@ -154,6 +176,80 @@
         {pendingCount} change{pendingCount === 1 ? '' : 's'} pending —
         {dp.online ? 'applying to the device…' : 'will apply when it reconnects.'}
       </p>
+    {/if}
+
+    {#if upd}
+      <div class="card">
+        <h3>Software</h3>
+        {#if !upd.online}
+          <p class="muted small">Connect the device to check for software updates.</p>
+        {:else}
+          {@const u = upd.update}
+          <p class="muted small">
+            Current: <b>{u.current || u.branch || 'unknown'}</b>
+            {#if u.commit_date}· {u.commit_date}{/if}
+            {#if u.state && u.state !== 'idle'}· <span class="dl">{u.state}</span>{/if}
+          </p>
+          {#if !u.offroad}
+            <p class="warn small">
+              The car is on. Updates can only be checked, downloaded, or installed while it’s off.
+            </p>
+          {:else}
+            {#if u.updates_disabled}
+              <p class="warn small">
+                Automatic updates are turned off on the device, so the updater isn’t running.
+                Turn it on and reboot before checking for updates.
+              </p>
+            {:else if !u.updater_running}
+              <p class="warn small">The updater isn’t running on the device right now.</p>
+            {/if}
+            <div class="modelrow">
+              <button disabled={updBusy} onclick={() => updateAction({ action: 'check' }, 'Checking for updates on the device…')}>
+                Check
+              </button>
+              <button disabled={updBusy || !u.fetch_available}
+                      onclick={() => updateAction({ action: 'download' }, 'Downloading in the background on the device.')}>
+                Download
+              </button>
+              <button disabled={updBusy || !u.update_ready}
+                      onclick={() => updateAction({ action: 'install' }, 'Rebooting the device to install.',
+                        `Install${u.new ? `:\n\n${u.new}\n\n` : ' the downloaded update? '}This reboots the device now. Make sure the car is off and nobody is about to drive it.`)}>
+                Install &amp; reboot
+              </button>
+              <button class="ghost" disabled={updBusy}
+                      onclick={() => updateAction({ action: 'updates', enabled: u.updates_disabled },
+                        `Automatic updates ${u.updates_disabled ? 'enabled' : 'disabled'} — takes effect after a reboot.`)}>
+                {u.updates_disabled ? 'Enable' : 'Disable'} automatic updates
+              </button>
+            </div>
+            {#if u.update_ready}
+              <p class="ok small">Downloaded and staged: <b>{u.new}</b> — install to reboot into it.</p>
+            {:else if u.fetch_available}
+              <p class="muted small">An update is available to download.</p>
+            {:else if u.last_checked}
+              <p class="muted small">Up to date — last checked {u.last_checked}.</p>
+            {/if}
+            {#if u.branches.length}
+              <div class="modelrow">
+                <select bind:value={branchSel} disabled={updBusy}>
+                  {#each u.branches as b}<option value={b}>{b}</option>{/each}
+                </select>
+                <button disabled={updBusy || !branchSel || branchSel === u.target_branch}
+                        onclick={() => updateAction({ action: 'branch', branch: branchSel }, 'Target branch set — checking for that version.',
+                          `Switch the device to branch "${branchSel}"?\n\nIt downloads in the background; you then install and reboot. Switching branches changes the driving software.`)}>
+                  Set branch
+                </button>
+              </div>
+              <p class="muted small">
+                Target branch: <b>{u.target_branch || u.branch}</b>
+                {#if u.branch && u.target_branch && u.branch !== u.target_branch}· running <b>{u.branch}</b>{/if}
+              </p>
+            {/if}
+          {/if}
+          {#if u.last_error}<p class="error small">Last update error: {u.last_error}</p>{/if}
+          {#if updMsg}<p class="ok small">{updMsg}</p>{/if}
+        {/if}
+      </div>
     {/if}
 
     {#if model}
@@ -248,6 +344,7 @@
   h3 { margin: 12px 0 4px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
   .small { font-size: 12px; }
   .ok { color: #3fb950; }
+  .warn { color: #d29922; }
   .modelrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
   .modelrow select { flex: 1; min-width: 200px; }
   .dl { color: var(--accent); }

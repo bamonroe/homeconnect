@@ -11,6 +11,7 @@ pub mod cereal;
 pub mod config;
 pub mod db;
 pub mod device_params;
+pub mod device_update;
 pub mod device_ssh;
 pub mod denoise;
 pub mod devsync;
@@ -98,6 +99,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices/{dongle_id}/claim", post(api::v1::claim_device))
         .route("/v1/devices/{dongle_id}/sync", post(api::devsync::sync_now))
         .route("/v1/devices/{dongle_id}/params", get(api::device_params::get_params).post(api::device_params::set_param))
+        .route("/v1/devices/{dongle_id}/update", get(api::device_update::get_update).post(api::device_update::post_update))
         .route("/v1/devices/{dongle_id}/model", get(api::device_params::get_model).post(api::device_params::set_model))
         .route("/v1/sync/queue", get(api::devsync::queue_stats))
         .route("/v1/movies/queue", get(api::v1::movie_queue))

@@ -1,4 +1,5 @@
 pub mod device_params;
+pub mod device_update;
 pub mod devsync;
 pub mod manage;
 pub mod onboard;
