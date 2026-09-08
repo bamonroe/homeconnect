@@ -31,7 +31,7 @@ pub async fn get_update(
 
 #[derive(Deserialize)]
 pub struct UpdateAction {
-    /// `check` | `download` | `install` | `branch` | `updates`
+    /// `check` | `download` | `install` | `reboot` | `branch` | `updates`
     pub action: String,
     /// Target branch, for `action = "branch"`.
     #[serde(default)]
@@ -58,6 +58,7 @@ pub async fn post_update(
         "check" => device_update::check(&state, addr).await?,
         "download" => device_update::download(&state, addr).await?,
         "install" => device_update::install(&state, addr).await?,
+        "reboot" => device_update::reboot(&state, addr).await?,
         "branch" => device_update::set_branch(&state, addr, &req.branch).await?,
         "updates" => device_update::set_updates_enabled(&state, addr, req.enabled).await?,
         _ => return Err(AppError::BadRequest("unknown update action".into())),

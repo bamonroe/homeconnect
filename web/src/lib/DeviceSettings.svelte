@@ -198,7 +198,8 @@
             {#if u.updates_disabled}
               <p class="warn small">
                 Automatic updates are turned off on the device, so the updater isn’t running.
-                Turn it on and reboot before checking for updates.
+                Turn it on, then reboot (the updater only reads that setting at startup)
+                before checking for updates.
               </p>
             {:else if !u.updater_running}
               <p class="warn small">The updater isn’t running on the device right now.</p>
@@ -218,8 +219,13 @@
               </button>
               <button class="ghost" disabled={updBusy}
                       onclick={() => updateAction({ action: 'updates', enabled: u.updates_disabled },
-                        `Automatic updates ${u.updates_disabled ? 'enabled' : 'disabled'} — takes effect after a reboot.`)}>
+                        `Automatic updates ${u.updates_disabled ? 'enabled' : 'disabled'} — reboot to apply.`)}>
                 {u.updates_disabled ? 'Enable' : 'Disable'} automatic updates
+              </button>
+              <button class="ghost" disabled={updBusy}
+                      onclick={() => updateAction({ action: 'reboot' }, 'Rebooting the device — it’ll be back in a minute or two.',
+                        'Reboot the device now?\n\nMake sure the car is off and nobody is about to drive it.')}>
+                Reboot
               </button>
             </div>
             {#if u.update_ready}

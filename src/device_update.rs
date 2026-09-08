@@ -153,6 +153,16 @@ pub async fn install(state: &AppState, addr: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Reboot the device. Needed on its own (not just to install): `DisableUpdates`
+/// is only read when `updated` starts, so turning updates back on does nothing
+/// until the next boot. Same offroad gate as everything else here.
+pub async fn reboot(state: &AppState, addr: &str) -> AppResult<()> {
+    require_offroad(state, addr).await?;
+    write_param(state, addr, "DoReboot", "1").await?;
+    tracing::info!("device: reboot requested");
+    Ok(())
+}
+
 /// Point the updater at a different branch. Only branches the device itself
 /// listed in `UpdaterAvailableBranches` are accepted, so nothing user-supplied
 /// reaches the shell unvalidated.
