@@ -19,11 +19,16 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --bin homeconnect && \
     cp /build/target/release/homeconnect /usr/local/bin/homeconnect
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 # ffmpeg + VAAPI drivers for both GPUs so either is selectable at runtime:
 #   mesa-va-drivers          → radeonsi (AMD)
 #   intel-media-va-driver    → iHD (Intel Quick Sync)
 # (vainfo is handy for debugging GPU access from inside the container.)
+#
+# The runtime is trixie (not bookworm) for the newer iHD driver: bookworm's
+# 23.1 doesn't know newer Intel iGPUs (e.g. Alder Lake-N 8086:46d4) and fails
+# vaInitialize, so every transcode silently fell back to CPU. The binary is
+# still built on bookworm; it runs fine against trixie's newer glibc.
 #
 # We ship a static ffmpeg (BtbN master build) instead of Debian's ffmpeg (5.1):
 # the Nvidia AV1 encoder `av1_nvenc` only exists in ffmpeg 6.0+, and movies now
