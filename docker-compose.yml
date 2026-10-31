@@ -28,7 +28,7 @@ services:
     group_add:
       - "989"
     volumes:
-      - /data/storage/homeconnect:/data
+      - /storage/homeconnect:/data
     env_file:
       - .env
     environment:
