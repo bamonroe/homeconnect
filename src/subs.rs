@@ -312,7 +312,11 @@ async fn transcribe(client: &reqwest::Client, url: &str, wav: &std::path::Path) 
     let form = reqwest::multipart::Form::new()
         .part("file", part)
         .text("response_format", "vtt")
-        .text("temperature", "0.0");
+        .text("temperature", "0.0")
+        // Drive audio is mostly road noise: ask for whisper's voice detector, so silence
+        // isn't transcribed into made-up lines. speech_services' whisper no longer runs it
+        // by default (it drops words in dictation), but honours it per request.
+        .text("vad", "true");
     let resp = client.post(format!("{url}/inference")).multipart(form).send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("whisper returned {}", resp.status());
