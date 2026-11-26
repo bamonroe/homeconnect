@@ -85,6 +85,13 @@
       <div class="stat"><div class="v">{n0(s.max_speed)}</div><div class="k">top mph</div></div>
       <div class="stat"><div class="v">{n0(s.hard_brake)}</div><div class="k">hard brakes</div></div>
       <div class="stat"><div class="v">{n0(s.hard_accel)}</div><div class="k">hard accels</div></div>
+      {#if s.mi_per_kwh > 0}
+        <div class="stat" title="From the car's CAN log, provisional calibration. Covers {n0(s.ev_miles)} mi with a synced rlog.">
+          <div class="v">{n1(s.mi_per_kwh)}</div><div class="k">mi/kWh</div>
+        </div>
+        <div class="stat"><div class="v">{n0(s.ev_kwh_out - s.ev_kwh_regen)}</div><div class="k">kWh used</div></div>
+        <div class="stat"><div class="v">{n0(s.regen_pct)}%</div><div class="k">recovered by regen</div></div>
+      {/if}
     </div>
 
     <div class="mapwrap">

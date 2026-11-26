@@ -93,6 +93,7 @@
 
   let coords = $state([]); // {t, lat, lng, speed}
   let telemetry = $state([]); // {t, speed, gear, lb, rb, brake, gas, steer, engaged}
+  let power = $state([]); // [{t, kw}] battery power, + = discharging
   // Engage/disengage events derived from the continuous telemetry — only on a
   // real transition, so no duplicate or segment-boundary artifacts.
   // Why a disengagement happened, from the driver's inputs at the transition.
@@ -276,6 +277,12 @@
     const telemChunks = await Promise.all(nums.map((n) => fetchJson(seg(n, 'telemetry.json'))));
     coords = coordChunks.filter(Boolean).flat();
     telemetry = telemChunks.filter(Boolean).flat();
+    // EV battery power (rlog-derived, only for decoded EVs with synced rlogs).
+    if (route.ev_seconds > 0) {
+      const evChunks = await Promise.all(nums.map((n) => fetchJson(seg(n, 'ev.json'))));
+      power = evChunks.filter(Boolean).flatMap((c) =>
+        c.t.map((t, i) => ({ t, kw: c.kw[i] })).filter((p) => p.kw != null));
+    }
   }
 
   // Top-down model view (modelV2 from the rlog) — lazy-loaded on first toggle.
@@ -589,6 +596,11 @@
       {#if route.hard_accel_count}<span class="s">⚠ <b>{route.hard_accel_count}</b> hard accel{route.hard_accel_count === 1 ? '' : 's'}</span>{/if}
       {#if route.max_temp > 0}<span class="s">🌡 <b>{Math.round(route.max_temp)}</b>°C</span>{/if}
       {#if route.free_space >= 0}<span class="s"><b>{Math.round(route.free_space)}</b>% disk free</span>{/if}
+      {#if route.ev_seconds > 0 && route.mi_per_kwh > 0}
+        <span class="s" title="Battery energy from the car's CAN log (provisional calibration). Covers {route.ev_miles.toFixed(1)} mi with a synced rlog.">
+          ⚡ <b>{route.mi_per_kwh.toFixed(1)}</b> mi/kWh · <b>{(route.ev_kwh_out - route.ev_kwh_regen).toFixed(1)}</b> kWh · <b>{route.ev_kwh_regen.toFixed(1)}</b> regen ({route.regen_pct.toFixed(0)}%)
+        </span>
+      {/if}
     </div>
   {/if}
 
@@ -712,7 +724,7 @@
           {:else if p.id === 'map'}
             <div class="map" bind:this={mapEl} use:mapAutoResize></div>
           {:else if p.id === 'graph'}
-            <DriveGraph {telemetry} {curT} onseek={(t) => seek(t * 1000)} />
+            <DriveGraph {telemetry} {power} {curT} onseek={(t) => seek(t * 1000)} />
           {:else if p.id === 'topdown'}
             {#if modelLoading}
               <div class="muted small pad">Loading model…</div>

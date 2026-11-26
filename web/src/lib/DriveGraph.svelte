@@ -1,7 +1,7 @@
 <script>
   // Speed-over-time graph with openpilot-engaged shading, hard accel/brake marks,
   // and a playhead. Click to seek. Reads the telemetry already loaded by Drive.
-  let { telemetry = [], curT = 0, onseek } = $props();
+  let { telemetry = [], power = [], curT = 0, onseek } = $props();
 
   const W = 1000, H = 100, PAD = 8;
 
@@ -72,6 +72,32 @@
     return out;
   });
 
+  // Battery power as an area around the midline: discharge up, regen down,
+  // scaled to the drive's peak |kW|.
+  let peakKw = $derived(power.reduce((m, p) => Math.max(m, Math.abs(p.kw)), 1));
+  let maxKw = $derived(power.reduce((m, p) => Math.max(m, p.kw), 0));
+  let powerPaths = $derived.by(() => {
+    if (power.length < 2) return { out: '', regen: '' };
+    const mid = H / 2, half = H / 2 - PAD;
+    const area = (sel) => {
+      let d = '';
+      let open = false;
+      for (let i = 0; i < power.length; i++) {
+        const p = power[i];
+        const gap = i > 0 && p.t - power[i - 1].t > 2;
+        const x = ((p.t / maxT) * W).toFixed(1);
+        if (open && gap) { d += `L${((power[i - 1].t / maxT) * W).toFixed(1)},${mid} Z `; open = false; }
+        const v = sel(p.kw);
+        const y = (mid - (v / peakKw) * half).toFixed(1);
+        if (!open) { d += `M${x},${mid} `; open = true; }
+        d += `L${x},${y} `;
+      }
+      if (open) d += `L${((power[power.length - 1].t / maxT) * W).toFixed(1)},${mid} Z`;
+      return d;
+    };
+    return { out: area((k) => Math.max(0, k)), regen: area((k) => Math.min(0, k)) };
+  });
+
   let playX = $derived((Math.min(curT, maxT) / maxT) * W);
 
   function click(e) {
@@ -85,6 +111,10 @@
   <div class="graph">
     <svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" onclick={click} role="presentation">
       {#each engaged as g}<rect class="eng" x={g.x} y="0" width={g.w} height={H} />{/each}
+      {#if power.length > 1}
+        <path class="pout" d={powerPaths.out} />
+        <path class="pregen" d={powerPaths.regen} />
+      {/if}
       <path class="spd" d={speedPath} />
       {#each marks as m}<line class={m.kind} x1={m.x} x2={m.x} y1="0" y2={H} />{/each}
       {#each distracted as d}<rect class="distr" x={d.x} y={H - 6} width={d.w} height="6" />{/each}
@@ -95,7 +125,8 @@
       <span><i class="brake"></i> hard brake</span>
       <span><i class="accel"></i> hard accel</span>
       {#if hasDM}<span><i class="distr"></i> distracted</span>{/if}
-      <span class="right">peak {Math.round(maxSpeed)} mph</span>
+      {#if power.length > 1}<span><i class="pout"></i> power</span><span><i class="pregen"></i> regen</span>{/if}
+      <span class="right">peak {Math.round(maxSpeed)} mph{#if power.length > 1} · {Math.round(maxKw)} kW{/if}</span>
     </div>
   </div>
 {/if}
@@ -108,6 +139,8 @@
   .brake { stroke: #f85149; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
   .accel { stroke: #d29922; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
   .distr { fill: #a371f7; opacity: 0.9; }
+  .pout { fill: #d29922; opacity: 0.35; }
+  .pregen { fill: #3fb950; opacity: 0.45; }
   .play { stroke: #fff; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
   .legend { display: flex; gap: 12px; align-items: center; margin-top: 4px; }
   .legend .right { margin-left: auto; }
@@ -116,4 +149,6 @@
   .legend i.brake { background: #f85149; }
   .legend i.accel { background: #d29922; }
   .legend i.distr { background: #a371f7; }
+  .legend i.pout { background: #d29922; opacity: 0.6; }
+  .legend i.pregen { background: #3fb950; opacity: 0.7; }
 </style>

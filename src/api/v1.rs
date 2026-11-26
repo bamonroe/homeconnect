@@ -286,9 +286,10 @@ pub async fn my_stats(
 ) -> AppResult<Json<Value>> {
     // Per-route metrics, aggregated in Rust so the ignore rules can drop trivial
     // drives from the totals.
-    let rows: Vec<(f64, f64, f64, f64, f64, i64, i64, i64)> = sqlx::query_as(
+    let rows: Vec<(f64, f64, f64, f64, f64, i64, i64, i64, f64, f64, f64)> = sqlx::query_as(
         "SELECT length, drive_seconds, engaged_meters, telem_meters, max_speed, \
-                disengage_count, hard_brake_count, hard_accel_count FROM routes \
+                disengage_count, hard_brake_count, hard_accel_count, \
+                ev_kwh_out, ev_kwh_regen, ev_meters FROM routes \
          WHERE maxqlog != -1 AND device_dongle_id IN ( \
             SELECT dongle_id FROM devices WHERE owner_id = ? OR ? = 1 \
             UNION SELECT device_dongle_id FROM authorized_users WHERE user_id = ?)",
@@ -303,7 +304,8 @@ pub async fn my_stats(
     let rules = crate::ignore::load_rules(&state).await;
     let (mut routes, mut miles, mut drive_s, mut engaged_m, mut telem_m) = (0i64, 0.0, 0.0, 0.0, 0.0);
     let (mut max_speed, mut disengage, mut hard_brake, mut hard_accel) = (0.0f64, 0i64, 0i64, 0i64);
-    for (length, ds, em, tm, ms, dis, hb, ha) in rows {
+    let (mut ev_out, mut ev_regen, mut ev_m) = (0.0f64, 0.0f64, 0.0f64);
+    for (length, ds, em, tm, ms, dis, hb, ha, eo, er, evm) in rows {
         if crate::ignore::is_ignored(&rules, length, ds / 60.0) {
             continue;
         }
@@ -316,7 +318,11 @@ pub async fn my_stats(
         disengage += dis;
         hard_brake += hb;
         hard_accel += ha;
+        ev_out += eo;
+        ev_regen += er;
+        ev_m += evm;
     }
+    let (mi_per_kwh, regen_pct) = ev_ratios(ev_out, ev_regen, ev_m / METERS_PER_MILE);
 
     let engaged_mi = engaged_m / METERS_PER_MILE;
     Ok(Json(json!({
@@ -328,6 +334,11 @@ pub async fn my_stats(
         "disengagements": disengage,
         "disengagements_per_100mi": if engaged_mi > 0.0 { disengage as f64 / engaged_mi * 100.0 } else { 0.0 },
         "max_speed": max_speed,
+        "ev_kwh_out": ev_out,
+        "ev_kwh_regen": ev_regen,
+        "ev_miles": ev_m / METERS_PER_MILE,
+        "mi_per_kwh": mi_per_kwh,
+        "regen_pct": regen_pct,
         "avg_speed": if drive_s > 0.0 { (telem_m / drive_s) * MPH_PER_MS } else { 0.0 },
         "hard_brake": hard_brake,
         "hard_accel": hard_accel,
@@ -432,6 +443,18 @@ struct RouteRow {
     max_temp: f64,
     min_free: f64,
     max_mem: i64,
+    ev_kwh_out: f64,
+    ev_kwh_regen: f64,
+    ev_seconds: f64,
+    ev_meters: f64,
+}
+
+/// Efficiency and regen share from energy totals (0 when not computable).
+fn ev_ratios(kwh_out: f64, kwh_regen: f64, miles: f64) -> (f64, f64) {
+    let net = kwh_out - kwh_regen;
+    let mi_per_kwh = if net > 0.0 { miles / net } else { 0.0 };
+    let regen_pct = if kwh_out > 0.0 { 100.0 * kwh_regen / kwh_out } else { 0.0 };
+    (mi_per_kwh, regen_pct)
 }
 
 fn json_arr(s: &str) -> Value {
@@ -442,7 +465,7 @@ const METERS_PER_MILE: f64 = 1609.344;
 const MPH_PER_MS: f64 = 1.0 / 0.44704;
 
 fn route_json(r: &RouteRow, public_url: &str, sig: &str) -> Value {
-    json!({
+    let mut v = json!({
         "fullname": r.fullname,
         "dongle_id": r.device_dongle_id,
         "start_time_utc_millis": r.start_time_utc_millis,
@@ -485,7 +508,20 @@ fn route_json(r: &RouteRow, public_url: &str, sig: &str) -> Value {
         "qcamera_m3u8": format!("{public_url}/v1/route/{}/qcamera.m3u8", r.fullname),
         "share_sig": sig,
         "share_exp": "86400",
-    })
+    });
+    // EV energy from the rlog (provisional calibration; 0 when the car isn't one
+    // we decode, or no rlog was synced).
+    let ev_miles = r.ev_meters / METERS_PER_MILE;
+    let (mi_per_kwh, regen_pct) = ev_ratios(r.ev_kwh_out, r.ev_kwh_regen, ev_miles);
+    if let Some(o) = v.as_object_mut() {
+        o.insert("ev_seconds".into(), json!(r.ev_seconds));
+        o.insert("ev_kwh_out".into(), json!(r.ev_kwh_out));
+        o.insert("ev_kwh_regen".into(), json!(r.ev_kwh_regen));
+        o.insert("ev_miles".into(), json!(ev_miles));
+        o.insert("mi_per_kwh".into(), json!(mi_per_kwh));
+        o.insert("regen_pct".into(), json!(regen_pct));
+    }
+    v
 }
 
 /// GET /v1/devices/:dongle_id/routes_segments — the device's drives (each route
