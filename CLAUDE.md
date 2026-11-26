@@ -66,7 +66,7 @@ macros).
 | File | Responsibility |
 |---|---|
 | `lib.rs` | `build_state()`, the axum `router()`, all route wiring |
-| `main.rs` | bootstrap, tracing, CLI subcommands (`create-user`, `reparse`), spawns workers |
+| `main.rs` | bootstrap, tracing, CLI subcommands (`create-user`, `reparse`, `reparse-rlog`, `ev-inspect`), spawns workers |
 | `config.rs` | `Config` from `HC_*` env (bind, data dir, public URL, jwt secret, web dir, retention, `vaapi_device`, sync/movie/autoprune seeds) |
 | `state.rs` | `AppState { config, pool, blobs, athena, sync_queue, movie_queue }` |
 | `db.rs` | SQLite pool (WAL), `migrate!`, `now_millis/now_secs` |
@@ -76,7 +76,7 @@ macros).
 | `access.rs` | `can_view_device/dongle/route` + `load_device` authorization helpers |
 | `storage.rs` | filesystem blob store; key = `{dongle}_{ts}--{seg}--{file}`, sharded by sha256 |
 | `ingest.rs` | `connectincoming` PUT handlers; qlog→parse, everything else→register URL |
-| `parse.rs` | qlog decode (capnp) → routes/segments + coords/events/telemetry (incl. MADS lateral/longitudinal engagement + driver monitoring: face/distracted/awareness)/sprite + per-drive stats; `extract_model` builds `model.json` (modelV2 path/lanes/lead from the rlog) for the overlay/top-down; haversine; route aggregation; `reparse_all` |
+| `parse.rs` | qlog decode (capnp) → routes/segments + coords/events/telemetry (incl. MADS lateral/longitudinal engagement + driver monitoring: face/distracted/awareness)/sprite + per-drive stats; `extract_model` builds `model.json` (modelV2 path/lanes/lead from the rlog) for the overlay/top-down; `extract_ev` builds `ev.json` (EV pack power/current/voltage/SoC + motor force, 0.5 s averages) and per-segment `ev_kwh_out/ev_kwh_regen/ev_seconds/ev_meters` (mig 0011, summed onto routes) — both via `parse_rlog_and_store`, one decompress per rlog; haversine; route aggregation; `reparse_all` |
 | `cereal/mod.rs` | generated capnp bindings (built by `build.rs` from `vendor/cereal`) |
 | `athena.rs` | device websocket: `ConnectionManager`, 10s ping, online/offline, stale reaper |
 | `serve.rs` | `connectdata` blob serving with HTTP Range (206); transcode + audio serving |
@@ -237,7 +237,8 @@ They use synthetic ES256 devices (openssl) and synthetic/real cereal qlogs:
 `m4_spa`, `m5_transcode`, `m6_retention`, `m7_devsync` (shared ingest core +
 idempotency; `devsync.rs` also has inline unit tests for the realdata path parser
 and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
-`m_transcode_device`, `m_subs` (subtitle status/serve/delete + public-share
+`m_transcode_device`, `m9_ev` (EV decode, energy totals in either rlog/qlog
+order, non-IONIQ gating), `m_subs` (subtitle status/serve/delete + public-share
 access; `subs.rs` has inline unit tests for the VTT parse/shift/render round trip).
 Run the full suite before deploying.
 
@@ -335,12 +336,21 @@ Run the full suite before deploying.
   the device). Caveat: don't expect auto-prune to reclaim the 14 GB of hevc unless
   full-res is in the synced set; by default only qlog+qcamera are pulled (and thus
   prunable).
-- **EV telemetry (SoC/power): recoverable from the rlog.** The earlier conclusion
-  that it wasn't logged was wrong: it only checked the openpilot DBC. The
-  2026-11-26 comma4 research (`/side_hustle/comma4/docs/regen-telemetry.md`) found
-  undecoded bus-1 messages, with provisional scales, of about 0.003% state of charge
-  (`0x25a`), 0.1 A pack current (`0x2fa`), 4 W pack power (`0x250`), 0.1 V pack
-  voltage (`0x235`) and motor torque (`0xda`, `0xf5`). They are not in the qlog,
-  which keeps only about 3 CAN frames a minute, so parsing needs the rlog. `0x4D8`
-  (`CLUSTER_INFO`) is *not* the state of charge. `Live`
+- **EV telemetry is decoded from the rlog** (`parse::extract_ev`). The fields are
+  undecoded bus-1 CAN found by the 2026-11-26 comma4 research
+  (`/side_hustle/comma4/docs/regen-telemetry.md`), with provisional scales: pack
+  power `0x250:20` s16le ×4 W, current `0x2fa:8` s16le ×0.1 A, voltage `0x235:13`
+  u16le ×0.1 V, state of charge `0x25a:12` u16le & 0x7fff (raw; the mapping to the
+  dash % is unresolved), motor force `0xda:12` s16le ×3.85 N at the wheels.
+  Positive = discharge. **Gated on the `carParams` fingerprint** (`EV_FINGERPRINTS`,
+  IONIQ 5 only) since other cars reuse those addresses for other things. Energy
+  integrates power sample-and-hold, skipping gaps over 1 s; distance comes from
+  `carState.vEgo`, so mi/kWh only covers segments with an rlog. On the 124-mile
+  `00000201` drive it gives 3.31 mi/kWh against the dash's 3.3–3.5. Peaks reach
+  ±120 kW, close to the 131 kW an s16 holds at 4 W per count, so hard launches
+  may clip if the field is really wider. Not in the qlog (only ~3 CAN frames a
+  minute). An rlog ingested before its qlog writes `ev.json` but has no segment row
+  yet; `parse_and_store` re-applies the totals from `ev.json`. `0x4D8`
+  (`CLUSTER_INFO`) is *not* the state of charge. Backfill: `reparse-rlog`; check
+  one file: `ev-inspect <path>`. `Live`
   view (WebRTC + remote control) is intentionally out of scope for security.

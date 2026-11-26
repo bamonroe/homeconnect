@@ -201,7 +201,8 @@ More can be mined from the qlog data we already collect. Rough priority:
 - [x] **All-drives heatmap** — every trip's GPS on one map (Stats page).
 
 **EV telemetry (now feasible)**
-- [ ] **Battery state of charge, power, current and voltage, plus motor torque and regen** per drive. These turn out to be in the logged CAN after all: undecoded messages on bus 1 that the openpilot DBC doesn't define. The comma4 research project found and provisionally calibrated them. Needs the **rlog**: qlogs keep only about 3 CAN frames a minute. See CLAUDE.md.
+- [x] **Battery energy and regen** per drive: kWh used, kWh recovered by regen, and mi/kWh on the Drive stats strip and the Stats page, plus a battery-power trace (discharge vs regen) in the drive graph. Decoded from bus-1 CAN in the **rlog** that the openpilot DBC doesn't define, using the comma4 research's provisional scales; on a 124-mile drive it matches the dash's 3.3–3.5 mi/kWh. IONIQ 5 only for now.
+- [ ] State of charge %, pack voltage/current and motor force in the UI (already in `ev.json`; the SoC-to-dash-% mapping is unresolved), and a friction-braking estimate.
 
 **Storage**
 - [x] **Per-type retention** — each video type and each log has its own age / count / size limits (Settings → Retention policy). Pruning removes only that type; the drive's logs, telemetry and DB rows stay, and logs default to forever.
