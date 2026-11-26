@@ -281,13 +281,18 @@ fn speed_norm(d: crate::cereal::log_capnp::x_y_z_t_data::Reader<'_>, step: usize
 /// lead — with z, in the device frame) + the segment's calibration. Frames thinned
 /// to ~5 Hz, points to ~1/3, to keep it light.
 pub fn extract_model(file: &str, raw: &[u8]) -> ModelArtifact {
+    match decompress(file, raw) {
+        Ok(data) => model_from_data(&data),
+        Err(_) => ModelArtifact { rpy: [0.0; 3], frames: Vec::new() },
+    }
+}
+
+fn model_from_data(data: &[u8]) -> ModelArtifact {
     use crate::cereal::log_capnp::event;
     const FRAME_STEP: usize = 4; // 20 Hz → ~5 Hz
     const PT_STEP: usize = 3;
-    let empty = ModelArtifact { rpy: [0.0; 3], frames: Vec::new() };
-    let Ok(data) = decompress(file, raw) else { return empty };
     let opts = ReaderOptions { traversal_limit_in_words: Some(usize::MAX), nesting_limit: 128 };
-    let mut cursor = std::io::Cursor::new(&data[..]);
+    let mut cursor = std::io::Cursor::new(data);
     let mut base: Option<u64> = None;
     let mut frames = Vec::new();
     let mut rpy = [0.0f32; 3];
@@ -362,7 +367,10 @@ pub async fn parse_model_and_store(
     file: &str,
     raw: &[u8],
 ) -> AppResult<()> {
-    let artifact = extract_model(file, raw);
+    store_model(state, dongle, ts, seg, extract_model(file, raw)).await
+}
+
+async fn store_model(state: &AppState, dongle: &str, ts: &str, seg: i64, artifact: ModelArtifact) -> AppResult<()> {
     if artifact.frames.is_empty() {
         return Ok(());
     }
@@ -373,6 +381,237 @@ pub async fn parse_model_and_store(
         .put(&key, &json)
         .await
         .map_err(|e| crate::error::AppError::Other(anyhow::anyhow!("model.json write: {e}")))?;
+    Ok(())
+}
+
+// ── EV battery / motor telemetry — parsed from the rlog's raw CAN ──────────────
+// The IONIQ 5 logs pack power, current, voltage, state of charge and motor torque
+// on bus 1 in messages the openpilot DBC doesn't define. Field positions and
+// scales are the *provisional* calibration from the comma4 research
+// (`/side_hustle/comma4/docs/regen-telemetry.md`). The qlog keeps only a few CAN
+// frames a minute, so this needs the full rlog.
+
+/// Fingerprints whose CAN layout the fields below were calibrated on.
+const EV_FINGERPRINTS: [&str; 1] = ["HYUNDAI_IONIQ_5"];
+const EV_BUS: u8 = 1;
+const EV_BIN_S: f64 = 0.5;
+/// Longest gap integrated across; a longer CAN dropout counts as no data.
+const EV_MAX_DT: f64 = 1.0;
+
+fn s16le(d: &[u8], off: usize) -> Option<f64> {
+    d.get(off..off + 2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f64)
+}
+fn u16le(d: &[u8], off: usize) -> Option<f64> {
+    d.get(off..off + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as f64)
+}
+
+/// One decoded EV reading.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EvField {
+    /// Pack power, kW; positive = discharging.
+    PowerKw(f64),
+    /// Pack current, A; positive = discharging.
+    CurrentA(f64),
+    /// Pack voltage, V.
+    Volts(f64),
+    /// State of charge, raw 15-bit count (mapping to the dash % is unresolved).
+    SocRaw(f64),
+    /// Motor force at the wheels, kN; negative = regen braking.
+    WheelKn(f64),
+}
+
+/// Decode one bus-1 CAN frame into an EV reading, if it's one we know.
+pub fn decode_ev_frame(address: u32, dat: &[u8]) -> Option<EvField> {
+    match address {
+        0x250 => s16le(dat, 20).map(|r| EvField::PowerKw(r * 4.0 / 1000.0)),
+        0x2fa => s16le(dat, 8).map(|r| EvField::CurrentA(r * 0.1)),
+        0x235 => u16le(dat, 13).map(|r| EvField::Volts(r * 0.1)),
+        0x25a => u16le(dat, 12).map(|r| EvField::SocRaw((r as u32 & 0x7fff) as f64)),
+        0xda => s16le(dat, 12).map(|r| EvField::WheelKn(r * 3.85 / 1000.0)),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+struct EvBin {
+    n: [u32; 5],
+    sum: [f64; 5],
+}
+
+/// Per-segment EV artifact (`ev.json`): 0.5 s averages, columnar, plus totals.
+/// A series value is `null` where that field had no frame in the bin.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct EvArtifact {
+    pub t: Vec<f64>,
+    pub kw: Vec<Option<f32>>,
+    pub amps: Vec<Option<f32>>,
+    pub volts: Vec<Option<f32>>,
+    pub soc_raw: Vec<Option<f32>>,
+    pub wheel_kn: Vec<Option<f32>>,
+    /// Energy drawn from the pack (kWh).
+    pub kwh_out: f64,
+    /// Energy put back by regen (kWh, positive).
+    pub kwh_regen: f64,
+    /// Seconds of power data integrated.
+    pub seconds: f64,
+    /// Distance from `carState.vEgo` over the segment (m).
+    pub meters: f64,
+}
+
+/// Extract EV telemetry from a decompressed rlog. `None` when the car isn't one
+/// the fields are calibrated for, or no power frames were logged.
+pub fn extract_ev(data: &[u8]) -> Option<EvArtifact> {
+    use crate::cereal::log_capnp::event;
+    let opts = ReaderOptions { traversal_limit_in_words: Some(usize::MAX), nesting_limit: 128 };
+    let mut cursor = std::io::Cursor::new(data);
+    let mut base: Option<u64> = None;
+    let mut fingerprint: Option<String> = None;
+    let mut bins: std::collections::BTreeMap<i64, EvBin> = Default::default();
+    let mut out = EvArtifact::default();
+    let mut last_p: Option<(f64, f64)> = None; // (t, kW)
+    let mut last_v: Option<(f64, f64)> = None; // (t, m/s)
+
+    while let Ok(reader) = serialize::read_message(&mut cursor, opts) {
+        let Ok(ev) = reader.get_root::<event::Reader>() else { continue };
+        let mono = ev.get_log_mono_time();
+        let b = *base.get_or_insert(mono);
+        let t = mono.saturating_sub(b) as f64 / 1e9;
+        match ev.which() {
+            Ok(event::Which::CarParams(Ok(cp))) if fingerprint.is_none() => {
+                if let Ok(f) = cp.get_car_fingerprint() {
+                    fingerprint = f.to_string().ok();
+                }
+            }
+            Ok(event::Which::CarState(Ok(cs))) => {
+                let v = cs.get_v_ego() as f64;
+                if let Some((t0, v0)) = last_v {
+                    let dt = t - t0;
+                    if dt > 0.0 && dt <= EV_MAX_DT {
+                        out.meters += v0.max(0.0) * dt;
+                    }
+                }
+                last_v = Some((t, v));
+            }
+            Ok(event::Which::Can(Ok(frames))) => {
+                for fr in frames.iter() {
+                    if fr.get_src() != EV_BUS {
+                        continue;
+                    }
+                    let Ok(dat) = fr.get_dat() else { continue };
+                    let Some(field) = decode_ev_frame(fr.get_address(), dat) else { continue };
+                    let (i, val) = match field {
+                        EvField::PowerKw(p) => {
+                            if let Some((t0, p0)) = last_p {
+                                let dt = t - t0;
+                                if dt > 0.0 && dt <= EV_MAX_DT {
+                                    let kwh = p0 * dt / 3600.0;
+                                    if kwh >= 0.0 { out.kwh_out += kwh } else { out.kwh_regen -= kwh }
+                                    out.seconds += dt;
+                                }
+                            }
+                            last_p = Some((t, p));
+                            (0, p)
+                        }
+                        EvField::CurrentA(a) => (1, a),
+                        EvField::Volts(v) => (2, v),
+                        EvField::SocRaw(s) => (3, s),
+                        EvField::WheelKn(f) => (4, f),
+                    };
+                    let bin = bins.entry((t / EV_BIN_S).floor() as i64).or_default();
+                    bin.n[i] += 1;
+                    bin.sum[i] += val;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    match fingerprint.as_deref() {
+        Some(f) if EV_FINGERPRINTS.iter().any(|p| f.starts_with(p)) => {}
+        _ => return None,
+    }
+    if bins.values().all(|b| b.n[0] == 0) {
+        return None;
+    }
+    for (k, b) in &bins {
+        let avg = |i: usize| (b.n[i] > 0).then(|| (b.sum[i] / b.n[i] as f64) as f32);
+        out.t.push(*k as f64 * EV_BIN_S);
+        out.kw.push(avg(0));
+        out.amps.push(avg(1));
+        out.volts.push(avg(2));
+        out.soc_raw.push(avg(3));
+        out.wheel_kn.push(avg(4));
+    }
+    Some(out)
+}
+
+/// One-line JSON summary of an rlog's EV totals (debug/CLI helper).
+pub fn ev_summary(file: &str, raw: &[u8]) -> Option<String> {
+    let data = decompress(file, raw).ok()?;
+    let ev = extract_ev(&data)?;
+    let soc: Vec<f32> = ev.soc_raw.iter().flatten().copied().collect();
+    Some(serde_json::json!({
+        "kwh_out": ev.kwh_out,
+        "kwh_regen": ev.kwh_regen,
+        "seconds": ev.seconds,
+        "miles": ev.meters / 1609.344,
+        "bins": ev.t.len(),
+        "kw_max": ev.kw.iter().flatten().fold(f32::MIN, |a, b| a.max(*b)),
+        "kw_min": ev.kw.iter().flatten().fold(f32::MAX, |a, b| a.min(*b)),
+        "volts": ev.volts.iter().flatten().next(),
+        "soc_raw": [soc.first(), soc.last()],
+    }).to_string())
+}
+
+/// Parse a stored rlog once into its derived artifacts: `model.json` (top-down
+/// model view) and, for calibrated EVs, `ev.json` + the segment's energy stats.
+pub async fn parse_rlog_and_store(
+    state: &AppState,
+    dongle: &str,
+    ts: &str,
+    seg: i64,
+    file: &str,
+    raw: &[u8],
+) -> AppResult<()> {
+    let data = decompress(file, raw)?;
+    store_model(state, dongle, ts, seg, model_from_data(&data)).await?;
+    if let Some(ev) = extract_ev(&data) {
+        let json = serde_json::to_vec(&ev).unwrap_or_default();
+        state
+            .blobs
+            .put(&blob_key(dongle, ts, seg, "ev.json"), &json)
+            .await
+            .map_err(|e| crate::error::AppError::Other(anyhow::anyhow!("ev.json write: {e}")))?;
+        if apply_ev_stats(state, dongle, ts, seg, &ev).await? {
+            recompute_route(state, dongle, ts).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Write a segment's energy totals. Returns false if the segment row doesn't
+/// exist yet (rlog before qlog); the qlog parse picks them up from `ev.json`.
+async fn apply_ev_stats(state: &AppState, dongle: &str, ts: &str, seg: i64, ev: &EvArtifact) -> AppResult<bool> {
+    let r = sqlx::query(
+        "UPDATE segments SET ev_kwh_out = ?, ev_kwh_regen = ?, ev_seconds = ?, ev_meters = ? \
+         WHERE canonical_name = ?",
+    )
+    .bind(ev.kwh_out)
+    .bind(ev.kwh_regen)
+    .bind(ev.seconds)
+    .bind(ev.meters)
+    .bind(format!("{dongle}|{ts}--{seg}"))
+    .execute(&state.pool)
+    .await?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// Re-apply a segment's energy totals from an existing `ev.json` (if any).
+async fn apply_ev_stats_from_blob(state: &AppState, dongle: &str, ts: &str, seg: i64) -> AppResult<()> {
+    let Ok(bytes) = state.blobs.get(&blob_key(dongle, ts, seg, "ev.json")).await else { return Ok(()) };
+    if let Ok(ev) = serde_json::from_slice::<EvArtifact>(&bytes) {
+        apply_ev_stats(state, dongle, ts, seg, &ev).await?;
+    }
     Ok(())
 }
 
@@ -482,6 +721,7 @@ pub async fn parse_and_store(
     }
 
     upsert_segment(state, dongle, timestamp, segment, file, &acc).await?;
+    apply_ev_stats_from_blob(state, dongle, timestamp, segment).await?;
     recompute_route(state, dongle, timestamp).await?;
     write_route_meta(state, dongle, timestamp, &acc).await?;
 
@@ -916,6 +1156,10 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
         max_temp: f64,
         min_free: f64,
         max_mem: i64,
+        ev_kwh_out: f64,
+        ev_kwh_regen: f64,
+        ev_seconds: f64,
+        ev_meters: f64,
     }
 
     let segs: Vec<SegRow> = sqlx::query_as(
@@ -923,7 +1167,8 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
                 start_lat, start_lng, end_lat, end_lng, miles, \
                 start_time_utc_millis, end_time_utc_millis, \
                 engaged_meters, telem_meters, engaged_seconds, drive_seconds, max_speed, \
-                disengage_count, hard_brake_count, hard_accel_count, max_temp, min_free, max_mem \
+                disengage_count, hard_brake_count, hard_accel_count, max_temp, min_free, max_mem, \
+                ev_kwh_out, ev_kwh_regen, ev_seconds, ev_meters \
          FROM segments WHERE canonical_route_name = ? ORDER BY number ASC",
     )
     .bind(&fullname)
@@ -974,6 +1219,10 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
         .fold(f64::MAX, f64::min);
     let min_free = if min_free == f64::MAX { -1.0 } else { min_free };
     let max_mem: i64 = segs.iter().map(|s| s.max_mem).max().unwrap_or(0);
+    let ev_out: f64 = segs.iter().map(|s| s.ev_kwh_out).sum();
+    let ev_regen: f64 = segs.iter().map(|s| s.ev_kwh_regen).sum();
+    let ev_secs: f64 = segs.iter().map(|s| s.ev_seconds).sum();
+    let ev_m: f64 = segs.iter().map(|s| s.ev_meters).sum();
 
     sqlx::query(
         "UPDATE routes SET \
@@ -983,7 +1232,8 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
            maxqcamera = ?, maxcamera = ?, maxdcamera = ?, maxecamera = ?, maxqlog = ?, maxlog = ?, \
            engaged_meters = ?, telem_meters = ?, engaged_seconds = ?, drive_seconds = ?, \
            max_speed = ?, disengage_count = ?, hard_brake_count = ?, hard_accel_count = ?, \
-           max_temp = ?, min_free = ?, max_mem = ? \
+           max_temp = ?, min_free = ?, max_mem = ?, \
+           ev_kwh_out = ?, ev_kwh_regen = ?, ev_seconds = ?, ev_meters = ? \
          WHERE fullname = ?",
     )
     .bind(start_t)
@@ -1013,6 +1263,10 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
     .bind(max_temp)
     .bind(min_free)
     .bind(max_mem)
+    .bind(ev_out)
+    .bind(ev_regen)
+    .bind(ev_secs)
+    .bind(ev_m)
     .bind(&fullname)
     .execute(&state.pool)
     .await?;

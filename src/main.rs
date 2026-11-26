@@ -71,8 +71,19 @@ async fn run_cli(state: &AppState, args: &[String]) -> anyhow::Result<()> {
             println!("reparsed {n} segments");
             Ok(())
         }
-        "reparse-model" => {
-            // Build model.json (top-down modelV2) from every stored rlog.
+        "ev-inspect" => {
+            // usage: ev-inspect <rlog file path> — EV totals for one rlog (no DB).
+            let path = &args[1];
+            let raw = std::fs::read(path)?;
+            match homeconnect::parse::ev_summary(path, &raw) {
+                Some(s) => println!("{s}"),
+                None => println!("no EV data (car not calibrated, or no power frames)"),
+            }
+            Ok(())
+        }
+        "reparse-model" | "reparse-rlog" => {
+            // Rebuild the rlog artifacts (model.json + ev.json and the energy
+            // stats) from every stored rlog.
             let segs: Vec<(String, i64)> = sqlx::query_as(
                 "SELECT canonical_route_name, number FROM segments WHERE rlog_url != '' ORDER BY canonical_route_name, number",
             )
@@ -84,14 +95,14 @@ async fn run_cli(state: &AppState, args: &[String]) -> anyhow::Result<()> {
                 for f in ["rlog.zst", "rlog.bz2"] {
                     let key = homeconnect::storage::blob_key(dongle, ts, *seg, f);
                     if let Ok(bytes) = state.blobs.get(&key).await {
-                        if homeconnect::parse::parse_model_and_store(&state, dongle, ts, *seg, f, &bytes).await.is_ok() {
+                        if homeconnect::parse::parse_rlog_and_store(&state, dongle, ts, *seg, f, &bytes).await.is_ok() {
                             n += 1;
                         }
                         break;
                     }
                 }
             }
-            println!("built model.json for {n} segments");
+            println!("rebuilt rlog artifacts for {n} segments");
             Ok(())
         }
         "qlog-inspect" => {
