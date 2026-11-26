@@ -199,12 +199,14 @@ More can be mined from the qlog data we already collect. Rough priority:
 - [x] openpilot-style **overlay on the road camera** — the same data drawn *on* the video, via a one-time per-camera calibration (pinhole + equidistant-fisheye intrinsics, saved and reused for every drive).
 - [x] **All-drives heatmap** — every trip's GPS on one map (Stats page).
 
+**EV telemetry (now feasible)**
+- [ ] **Battery state of charge, power, current and voltage, plus motor torque and regen** per drive. These turn out to be in the logged CAN after all: undecoded messages on bus 1 that the openpilot DBC doesn't define. The comma4 research project found and provisionally calibrated them. Needs the **rlog**: qlogs keep only about 3 CAN frames a minute. See CLAUDE.md.
+
 **Storage**
 - [ ] **Per-type retention** — separate retention policies for each video type (qcamera, fcamera, dcamera, ecamera) and for the logs (rlog, qlog). Today one age/count/size policy prunes whole drives. Logs are small, compressed text that research (comma4) depends on, so the default should keep them indefinitely, while the large videos age out on a shorter policy. Pruning a drive's videos must leave its logs, telemetry and DB rows intact.
 
 **Intentionally out of scope**
 - Live view / remote control (WebRTC + steering/throttle) — security blast radius.
-- EV battery/SoC & power — not in the logged CAN (BMS is behind the powertrain gateway). See CLAUDE.md.
 
 ## Development
 

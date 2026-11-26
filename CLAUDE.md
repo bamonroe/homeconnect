@@ -335,10 +335,12 @@ Run the full suite before deploying.
   the device). Caveat: don't expect auto-prune to reclaim the 14 GB of hevc unless
   full-res is in the synced set; by default only qlog+qcamera are pulled (and thus
   prunable).
-- **EV telemetry (SoC/power): not recoverable** from these logs — investigated and
-  parked. openpilot logs the camera/ADAS CAN bus; the BMS/HV traffic is on the
-  powertrain CAN behind the gateway and isn't captured (`CarState.fuelGauge` reads
-  0, and the Hyundai CANFD DBC defines no BMS signal). The instrument cluster msg
-  `0x4D8` *is* logged and may encode the displayed SoC %, but decoding it is
-  reverse-engineering (best attempted against a charging-session capture). `Live`
+- **EV telemetry (SoC/power): recoverable from the rlog.** The earlier conclusion
+  that it wasn't logged was wrong: it only checked the openpilot DBC. The
+  2026-11-26 comma4 research (`/side_hustle/comma4/docs/regen-telemetry.md`) found
+  undecoded bus-1 messages, with provisional scales, of about 0.003% state of charge
+  (`0x25a`), 0.1 A pack current (`0x2fa`), 4 W pack power (`0x250`), 0.1 V pack
+  voltage (`0x235`) and motor torque (`0xda`, `0xf5`). They are not in the qlog,
+  which keeps only about 3 CAN frames a minute, so parsing needs the rlog. `0x4D8`
+  (`CLUSTER_INFO`) is *not* the state of charge. `Live`
   view (WebRTC + remote control) is intentionally out of scope for security.
