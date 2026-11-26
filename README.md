@@ -58,8 +58,9 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
   **switch the sunnypilot driving model**, from the browser over SSH — a start on
   replacing sunnylink.
 - **Local accounts** — username/password (Argon2), server-issued JWTs. No OAuth.
-- **Retention** — auto-prune by age / per-device count / total size, with an admin
-  settings page.
+- **Retention** — per data type (each camera, qlog, rlog): auto-prune by age /
+  per-device count / size, plus a total-storage cap that only removes videos.
+  Drives and their stats are never deleted, and logs are kept forever by default.
 - **Ignore rules** — a reversible filter (OR of AND-conditions on a drive's miles /
   minutes) to hide trivial/junk drives from the list and Stats; nothing is deleted.
 - **Easy onboarding** — a served `onboard.sh` repoints a device in one command;
@@ -148,9 +149,9 @@ All via env (`.env` for secrets):
 | `HC_JWT_SECRET` | dev placeholder | **set this** — base64 HMAC secret for user JWTs |
 | `HC_WEB_DIR` | `./web/dist` | built SPA directory |
 | `HC_VAAPI_DEVICE` | (unset → CPU) | default DRM render node for GPU transcoding, e.g. `/dev/dri/renderD128` |
-| `HC_RETAIN_DAYS` | `30` | keep drives newer than N days (0 = unlimited) |
-| `HC_RETAIN_DRIVES` | `30` | max drives per device (0 = unlimited) |
-| `HC_RETAIN_GB` | `100` | max total storage GB (0 = unlimited) |
+| `HC_RETAIN_DAYS` | `30` | initial video age limit in days (0 = unlimited); logs unaffected |
+| `HC_RETAIN_DRIVES` | `30` | initial video limit, drives per device (0 = unlimited) |
+| `HC_RETAIN_GB` | `100` | total storage GB; above it the oldest videos go (0 = unlimited) |
 | `HC_SYNC_ENABLED` | `true` | default for the runtime sync toggle (Settings → Automatic drive sync) |
 | `HC_SYNC_INTERVAL_SECS` | `60` | default for the runtime interval (Settings); `0` = connect-trigger only |
 | `HC_SYNC_FULLRES` | `false` | seeds the default synced data types (on → all cameras + rlog; off → Road only). Editable at Settings → Automatic drive sync |
@@ -203,7 +204,7 @@ More can be mined from the qlog data we already collect. Rough priority:
 - [ ] **Battery state of charge, power, current and voltage, plus motor torque and regen** per drive. These turn out to be in the logged CAN after all: undecoded messages on bus 1 that the openpilot DBC doesn't define. The comma4 research project found and provisionally calibrated them. Needs the **rlog**: qlogs keep only about 3 CAN frames a minute. See CLAUDE.md.
 
 **Storage**
-- [ ] **Per-type retention** — separate retention policies for each video type (qcamera, fcamera, dcamera, ecamera) and for the logs (rlog, qlog). Today one age/count/size policy prunes whole drives. Logs are small, compressed text that research (comma4) depends on, so the default should keep them indefinitely, while the large videos age out on a shorter policy. Pruning a drive's videos must leave its logs, telemetry and DB rows intact.
+- [x] **Per-type retention** — each video type and each log has its own age / count / size limits (Settings → Retention policy). Pruning removes only that type; the drive's logs, telemetry and DB rows stay, and logs default to forever.
 
 **Intentionally out of scope**
 - Live view / remote control (WebRTC + steering/throttle) — security blast radius.
