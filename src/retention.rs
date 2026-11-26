@@ -1,13 +1,18 @@
-//! Retention: a background task that prunes old drives so a home server doesn't
-//! fill its disk. Policy (any of which may be 0 = unlimited):
-//!   - keep drives newer than `days`
-//!   - keep at most `max_drives` per device (newest kept)
-//!   - keep total blob storage under `max_gb` (oldest deleted first)
+//! Retention: a background task that keeps a home server's disk in check by
+//! pruning data **per type**, never whole drives. Each data type (the four
+//! cameras, `qlog`, `rlog`) has its own limits, any of which may be 0 (unlimited):
+//!   - keep the type on drives newer than `days`
+//!   - keep it on at most `max_drives` drives per device (newest kept)
+//!   - keep its total size under `max_gb` (oldest drives lose it first)
 //!
-//! Deleting a route removes its blobs (camera/log segments + coords/events/
-//! sprite), its transcode cache, and its route/segment rows.
+//! On top of that, a whole-store `max_gb` cap prunes the oldest drives'
+//! **videos** (never logs) until total storage fits.
+//!
+//! Pruning a type uses [`purge_types`]: the drive's rows, telemetry, coords,
+//! model and subtitles stay, so a drive never disappears from the list. Logs are
+//! small and research depends on them, so they default to "keep forever".
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -16,39 +21,132 @@ use serde::{Deserialize, Serialize};
 use crate::db::now_millis;
 use crate::error::AppResult;
 use crate::state::AppState;
-use crate::storage::{blob_key, type_files};
+use crate::storage::{blob_key, type_files, DATA_TYPES, VIDEO_TYPES};
 
 const SWEEP_INTERVAL: Duration = Duration::from_secs(3600); // hourly
+const TYPES_KEY: &str = "retention_types";
+const TOTAL_GB_KEY: &str = "retain_gb";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Policy {
+/// Limits for one data type. 0 = unlimited.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct Limits {
+    #[serde(default)]
     pub days: i64,
+    #[serde(default)]
     pub max_drives: i64,
+    #[serde(default)]
     pub max_gb: f64,
 }
 
-/// Load the effective policy: settings-table overrides on top of config defaults.
-pub async fn load_policy(state: &AppState) -> Policy {
-    let days = crate::settings::get(state, "retain_days").await.and_then(|v| v.parse().ok()).unwrap_or(state.config.retain_days);
-    let max_drives = crate::settings::get(state, "retain_max_drives").await.and_then(|v| v.parse().ok()).unwrap_or(state.config.retain_max_drives);
-    let max_gb = crate::settings::get(state, "retain_gb").await.and_then(|v| v.parse().ok()).unwrap_or(state.config.retain_gb);
-    Policy { days, max_drives, max_gb }
+impl Limits {
+    pub fn is_valid(&self) -> bool {
+        self.days >= 0 && self.max_drives >= 0 && self.max_gb >= 0.0 && self.max_gb.is_finite()
+    }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Policy {
+    /// Whole-store cap in GB (0 = unlimited). Only ever prunes videos.
+    pub max_gb: f64,
+    /// Limits per data type; always holds every type in [`DATA_TYPES`].
+    pub types: BTreeMap<String, Limits>,
+}
+
+/// Load the effective policy. Per-type limits come from the `retention_types`
+/// setting. Before that existed there was one whole-drive policy; when the
+/// setting is unset its age and count limits seed the **video** types (logs
+/// stay unlimited), so upgrading keeps pruning videos as before but stops
+/// deleting logs.
+pub async fn load_policy(state: &AppState) -> Policy {
+    let max_gb = crate::settings::get(state, TOTAL_GB_KEY)
+        .await
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(state.config.retain_gb);
+    let stored: Option<BTreeMap<String, Limits>> = crate::settings::get(state, TYPES_KEY)
+        .await
+        .and_then(|v| serde_json::from_str(&v).ok());
+    let types = match stored {
+        Some(map) => DATA_TYPES
+            .iter()
+            .map(|t| (t.to_string(), map.get(*t).copied().unwrap_or_default()))
+            .collect(),
+        None => {
+            let days = crate::settings::get(state, "retain_days")
+                .await
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(state.config.retain_days);
+            let max_drives = crate::settings::get(state, "retain_max_drives")
+                .await
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(state.config.retain_max_drives);
+            let video = Limits { days, max_drives, max_gb: 0.0 };
+            DATA_TYPES
+                .iter()
+                .map(|t| {
+                    let l = if VIDEO_TYPES.contains(t) { video } else { Limits::default() };
+                    (t.to_string(), l)
+                })
+                .collect()
+        }
+    };
+    Policy { max_gb, types }
+}
+
+/// Save a policy. Unknown types are dropped; missing types become unlimited.
 pub async fn save_policy(state: &AppState, p: &Policy) -> AppResult<()> {
-    crate::settings::set(state, "retain_days", &p.days.to_string()).await?;
-    crate::settings::set(state, "retain_max_drives", &p.max_drives.to_string()).await?;
-    crate::settings::set(state, "retain_gb", &p.max_gb.to_string()).await?;
+    let types: BTreeMap<&str, Limits> = DATA_TYPES
+        .iter()
+        .map(|t| (*t, p.types.get(*t).copied().unwrap_or_default()))
+        .collect();
+    let json = serde_json::to_string(&types).map_err(|e| crate::error::AppError::Other(e.into()))?;
+    crate::settings::set(state, TYPES_KEY, &json).await?;
+    crate::settings::set(state, TOTAL_GB_KEY, &p.max_gb.to_string()).await?;
     Ok(())
 }
 
 /// Total bytes stored under the blobs + transcode directories.
 pub async fn storage_bytes(state: &AppState) -> u64 {
-    dir_size(state.blobs.root()).await + dir_size(&state.config.transcode_dir()).await
+    usage(state).await.0
 }
 
-async fn dir_size(root: &Path) -> u64 {
+/// Bytes held per data type (cameras include their transcode cache and movie).
+pub async fn type_bytes(state: &AppState) -> BTreeMap<String, u64> {
+    usage(state).await.1
+}
+
+/// Walk the store once: (total bytes, bytes per data type).
+async fn usage(state: &AppState) -> (u64, BTreeMap<String, u64>) {
+    let mut per: BTreeMap<String, u64> = DATA_TYPES.iter().map(|t| (t.to_string(), 0)).collect();
     let mut total = 0u64;
+    for root in [state.blobs.root().to_path_buf(), state.config.transcode_dir()] {
+        walk(&root, &mut |name, len| {
+            total += len;
+            if let Some(t) = classify(name) {
+                *per.entry(t.to_string()).or_default() += len;
+            }
+        })
+        .await;
+    }
+    (total, per)
+}
+
+/// Which data type a stored file belongs to, from its name.
+fn classify(name: &str) -> Option<&'static str> {
+    for t in DATA_TYPES {
+        if VIDEO_TYPES.contains(&t)
+            && (name.ends_with(&format!("--movie--{t}.mp4")) || name.ends_with(&format!("--{t}.ts")))
+        {
+            return Some(t);
+        }
+        let (names, _) = type_files(t)?;
+        if names.iter().any(|n| name.ends_with(&format!("--{n}"))) {
+            return Some(t);
+        }
+    }
+    None
+}
+
+async fn walk(root: &Path, f: &mut impl FnMut(&str, u64)) {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let mut rd = match tokio::fs::read_dir(&dir).await {
@@ -60,61 +158,170 @@ async fn dir_size(root: &Path) -> u64 {
                 Ok(ft) if ft.is_dir() => stack.push(entry.path()),
                 Ok(_) => {
                     if let Ok(m) = entry.metadata().await {
-                        total += m.len();
+                        f(&entry.file_name().to_string_lossy(), m.len());
                     }
                 }
                 Err(_) => {}
             }
         }
     }
-    total
 }
 
-/// Run one retention pass. Returns the number of routes deleted.
-pub async fn run_once(state: &AppState) -> AppResult<usize> {
-    let policy = load_policy(state).await;
-    let mut to_delete: BTreeSet<String> = BTreeSet::new();
-
-    // 1) Age cutoff.
-    if policy.days > 0 {
-        let cutoff = now_millis() - policy.days * 86_400_000;
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT fullname FROM routes \
-             WHERE (start_time_utc_millis > 0 AND start_time_utc_millis < ?) \
-                OR (start_time_utc_millis = 0 AND created_at < ?)",
+// "Route `r` still holds data type T": a segment with T's URL set, or (for a
+// camera) a built movie. `video` = any camera. sqlx wants `&'static str`, so the
+// per-type queries are assembled from literals at compile time.
+macro_rules! has {
+    (cam $col:literal, $cam:literal) => {
+        concat!(
+            "(EXISTS (SELECT 1 FROM segments s WHERE s.canonical_route_name = r.fullname AND s.",
+            $col,
+            " != '') OR EXISTS (SELECT 1 FROM movies m WHERE m.fullname = r.fullname AND m.cam = '",
+            $cam,
+            "' AND m.bytes > 0))"
         )
-        .bind(cutoff)
-        .bind(cutoff)
-        .fetch_all(&state.pool)
-        .await?;
-        to_delete.extend(rows.into_iter().map(|r| r.0));
-    }
+    };
+    (log $col:literal) => {
+        concat!(
+            "EXISTS (SELECT 1 FROM segments s WHERE s.canonical_route_name = r.fullname AND s.",
+            $col,
+            " != '')"
+        )
+    };
+}
 
-    // 2) Per-device drive count cap (keep newest max_drives).
-    if policy.max_drives > 0 {
-        let devices: Vec<(String,)> =
-            sqlx::query_as("SELECT dongle_id FROM devices").fetch_all(&state.pool).await?;
-        for (dongle,) in devices {
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT fullname FROM routes WHERE device_dongle_id = ? \
-                 ORDER BY start_time_utc_millis DESC, created_at DESC LIMIT -1 OFFSET ?",
-            )
-            .bind(&dongle)
-            .bind(policy.max_drives)
-            .fetch_all(&state.pool)
-            .await?;
-            to_delete.extend(rows.into_iter().map(|r| r.0));
+macro_rules! per_type {
+    ($t:expr, $head:literal, $tail:literal) => {
+        match $t {
+            "qcamera" => Some(concat!($head, has!(cam "qcam_url", "qcamera"), $tail)),
+            "fcamera" => Some(concat!($head, has!(cam "fcam_url", "fcamera"), $tail)),
+            "dcamera" => Some(concat!($head, has!(cam "dcam_url", "dcamera"), $tail)),
+            "ecamera" => Some(concat!($head, has!(cam "ecam_url", "ecamera"), $tail)),
+            "qlog" => Some(concat!($head, has!(log "qlog_url"), $tail)),
+            "rlog" => Some(concat!($head, has!(log "rlog_url"), $tail)),
+            "video" => Some(concat!(
+                $head, "(",
+                has!(cam "qcam_url", "qcamera"), " OR ",
+                has!(cam "fcam_url", "fcamera"), " OR ",
+                has!(cam "dcam_url", "dcamera"), " OR ",
+                has!(cam "ecam_url", "ecamera"), ")",
+                $tail
+            )),
+            _ => None,
+        }
+    };
+}
+
+/// Drives holding type `t` that started before `cutoff` (unix ms).
+async fn older_than(state: &AppState, t: &str, cutoff: i64) -> AppResult<Vec<String>> {
+    let Some(sql) = per_type!(
+        t,
+        "SELECT r.fullname FROM routes r \
+         WHERE ((r.start_time_utc_millis > 0 AND r.start_time_utc_millis < ?) \
+             OR (r.start_time_utc_millis = 0 AND r.created_at < ?)) AND ",
+        ""
+    ) else {
+        return Ok(Vec::new());
+    };
+    let rows: Vec<(String,)> =
+        sqlx::query_as(sql).bind(cutoff).bind(cutoff).fetch_all(&state.pool).await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
+/// A device's drives holding type `t`, beyond the newest `keep`.
+async fn beyond_newest(state: &AppState, t: &str, dongle: &str, keep: i64) -> AppResult<Vec<String>> {
+    let Some(sql) = per_type!(
+        t,
+        "SELECT r.fullname FROM routes r WHERE r.device_dongle_id = ? AND ",
+        " ORDER BY r.start_time_utc_millis DESC, r.created_at DESC LIMIT -1 OFFSET ?"
+    ) else {
+        return Ok(Vec::new());
+    };
+    let rows: Vec<(String,)> =
+        sqlx::query_as(sql).bind(dongle).bind(keep).fetch_all(&state.pool).await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
+/// The oldest drive still holding type `t` (or any video, for `"video"`).
+async fn oldest_with(state: &AppState, t: &str) -> AppResult<Option<String>> {
+    let Some(sql) = per_type!(
+        t,
+        "SELECT r.fullname FROM routes r WHERE ",
+        " ORDER BY r.start_time_utc_millis ASC, r.created_at ASC LIMIT 1"
+    ) else {
+        return Ok(None);
+    };
+    let row: Option<(String,)> = sqlx::query_as(sql).fetch_optional(&state.pool).await?;
+    Ok(row.map(|r| r.0))
+}
+
+/// What one retention pass removed.
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+pub struct Report {
+    /// (drive, type) pairs pruned.
+    pub pruned: usize,
+    /// Distinct drives that lost something.
+    pub drives: usize,
+    pub freed_bytes: u64,
+}
+
+/// Run one retention pass.
+pub async fn run_once(state: &AppState) -> AppResult<Report> {
+    let policy = load_policy(state).await;
+    let mut report = Report::default();
+    let mut touched: BTreeSet<String> = BTreeSet::new();
+
+    let mut prune = async |fullname: &str, types: &[String], report: &mut Report| -> AppResult<u64> {
+        let Some((dongle, ts)) = fullname.split_once('|') else { return Ok(0) };
+        let p = purge_types(state, dongle, ts, types).await?;
+        report.pruned += types.len();
+        report.freed_bytes += p.bytes;
+        touched.insert(fullname.to_string());
+        tracing::info!(%fullname, ?types, bytes = p.bytes, "retention: pruned");
+        Ok(p.bytes)
+    };
+
+    let devices: Vec<(String,)> =
+        sqlx::query_as("SELECT dongle_id FROM devices").fetch_all(&state.pool).await?;
+    let mut used = type_bytes(state).await;
+
+    for t in DATA_TYPES {
+        let lim = policy.types.get(t).copied().unwrap_or_default();
+        let one = [t.to_string()];
+        let mut victims: BTreeSet<String> = BTreeSet::new();
+
+        // 1) Age cutoff.
+        if lim.days > 0 {
+            victims.extend(older_than(state, t, now_millis() - lim.days * 86_400_000).await?);
+        }
+        // 2) Per-device count cap among drives that still hold this type.
+        if lim.max_drives > 0 {
+            for (dongle,) in &devices {
+                victims.extend(beyond_newest(state, t, dongle, lim.max_drives).await?);
+            }
+        }
+        for v in &victims {
+            let freed = prune(v, &one, &mut report).await?;
+            let e = used.entry(t.to_string()).or_default();
+            *e = e.saturating_sub(freed);
+        }
+        // 3) Size cap for this type: oldest drives lose it first.
+        if lim.max_gb > 0.0 {
+            let cap = (lim.max_gb * 1_000_000_000.0) as u64;
+            let mut seen = BTreeSet::new();
+            while used.get(t).copied().unwrap_or(0) > cap {
+                let Some(v) = oldest_with(state, t).await? else { break };
+                if !seen.insert(v.clone()) {
+                    break; // purge didn't clear it; don't spin
+                }
+                let freed = prune(&v, &one, &mut report).await?;
+                let e = used.entry(t.to_string()).or_default();
+                *e = e.saturating_sub(freed);
+            }
         }
     }
 
-    for fullname in &to_delete {
-        delete_route(state, fullname).await?;
-    }
-    let mut deleted = to_delete.len();
-
-    // Reclaim orphaned movies: rows/blobs whose route no longer exists (e.g. left
-    // behind by an older prune that didn't delete movies). One-time backlog clear
-    // that then stays clean because `delete_route` now removes movies inline.
+    // Reclaim orphaned movies: rows/blobs whose route no longer exists (left
+    // behind by an older prune that didn't delete movies).
     let orphans: Vec<(String, String)> = sqlx::query_as(
         "SELECT m.fullname, m.cam FROM movies m \
          LEFT JOIN routes r ON r.fullname = m.fullname \
@@ -131,29 +338,27 @@ pub async fn run_once(state: &AppState) -> AppResult<usize> {
         tracing::info!(count = orphans.len(), "retention: reclaimed orphaned movies");
     }
 
-    // 3) Storage cap: delete oldest remaining routes until under the limit.
+    // 4) Whole-store cap: the oldest drives lose their videos, never their logs.
     if policy.max_gb > 0.0 {
         let cap = (policy.max_gb * 1_000_000_000.0) as u64;
-        while storage_bytes(state).await > cap {
-            let oldest: Option<(String,)> = sqlx::query_as(
-                "SELECT fullname FROM routes ORDER BY start_time_utc_millis ASC, created_at ASC LIMIT 1",
-            )
-            .fetch_optional(&state.pool)
-            .await?;
-            match oldest {
-                Some((fullname,)) => {
-                    delete_route(state, &fullname).await?;
-                    deleted += 1;
-                }
-                None => break, // nothing left to delete
+        let mut total = storage_bytes(state).await;
+        let videos: Vec<String> = VIDEO_TYPES.iter().map(|t| t.to_string()).collect();
+        let mut seen = BTreeSet::new();
+        while total > cap {
+            let Some(v) = oldest_with(state, "video").await? else { break };
+            if !seen.insert(v.clone()) {
+                break;
             }
+            let freed = prune(&v, &videos, &mut report).await?;
+            total = total.saturating_sub(freed);
         }
     }
 
-    if deleted > 0 {
-        tracing::info!(deleted, "retention pass removed routes");
+    report.drives = touched.len();
+    if report.pruned > 0 {
+        tracing::info!(pruned = report.pruned, drives = report.drives, freed = report.freed_bytes, "retention pass");
     }
-    Ok(deleted)
+    Ok(report)
 }
 
 /// What a purge removed.
@@ -241,62 +446,6 @@ async fn clear_segment_col(state: &AppState, fullname: &str, seg: i64, col: &str
         _ => return,
     };
     let _ = sqlx::query(sql).bind(&canonical).execute(&state.pool).await;
-}
-
-/// Delete a route: its blobs, transcode cache, and DB rows.
-pub async fn delete_route(state: &AppState, fullname: &str) -> AppResult<()> {
-    let (dongle, ts) = match fullname.split_once('|') {
-        Some(p) => p,
-        None => return Ok(()),
-    };
-
-    let segs: Vec<(i64,)> =
-        sqlx::query_as("SELECT number FROM segments WHERE canonical_route_name = ?")
-            .bind(fullname)
-            .fetch_all(&state.pool)
-            .await?;
-
-    // Known per-segment artifacts (extensions tried for the compressed logs).
-    // `telemetry.json`/`model.json` are derived per segment and must be listed
-    // here too, else they're orphaned when the route is pruned.
-    let files = [
-        "qcamera.ts", "fcamera.hevc", "dcamera.hevc", "ecamera.hevc",
-        "qlog.bz2", "qlog.zst", "rlog.bz2", "rlog.zst",
-        "coords.json", "events.json", "telemetry.json", "model.json", "sprite.jpg",
-    ];
-    for (seg,) in &segs {
-        for f in files {
-            let _ = state.blobs.delete(&blob_key(dongle, ts, *seg, f)).await;
-        }
-        // Transcode cache (.ts per camera).
-        for cam in ["fcamera", "dcamera", "ecamera"] {
-            let p = state
-                .config
-                .transcode_dir()
-                .join(format!("{dongle}_{ts}--{seg}--{cam}.ts"));
-            let _ = tokio::fs::remove_file(&p).await;
-        }
-    }
-
-    // Route-level stitched movies are the single largest artifact class — they
-    // are NOT keyed per segment, so they must be deleted explicitly or they leak
-    // (blob + `movies` row) every time a route is pruned, and the storage-cap
-    // loop can never reclaim them.
-    for cam in crate::movie::MOVIE_CAMS {
-        crate::movie::delete(state, dongle, ts, cam).await;
-    }
-    // Same for the drive's transcript — also route-level, also not per segment.
-    crate::subs::delete(state, dongle, ts).await;
-
-    sqlx::query("DELETE FROM segments WHERE canonical_route_name = ?")
-        .bind(fullname)
-        .execute(&state.pool)
-        .await?;
-    sqlx::query("DELETE FROM routes WHERE fullname = ?")
-        .bind(fullname)
-        .execute(&state.pool)
-        .await?;
-    Ok(())
 }
 
 /// Spawn the periodic retention task (runs once shortly after start, then hourly).

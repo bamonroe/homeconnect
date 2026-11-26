@@ -253,14 +253,19 @@
     }
   }
 
+  // Retention: data types in display order (logs last).
+  const RET_TYPES = ['qcamera', 'fcamera', 'dcamera', 'ecamera', 'qlog', 'rlog'];
+  const gb = (b) => (b / 1e9).toFixed(b >= 1e9 ? 1 : 2);
+
   async function save() {
     busy = true; error = ''; msg = '';
     try {
-      await api.setRetention({
-        days: Number(cfg.days),
-        max_drives: Number(cfg.max_drives),
-        max_gb: Number(cfg.max_gb),
-      });
+      const types = {};
+      for (const t of RET_TYPES) {
+        const l = cfg.types[t];
+        types[t] = { days: Number(l.days), max_drives: Number(l.max_drives), max_gb: Number(l.max_gb) };
+      }
+      await api.setRetention({ max_gb: Number(cfg.max_gb), types });
       msg = 'Saved.';
       await load();
     } catch (e) {
@@ -274,7 +279,9 @@
     busy = true; error = ''; msg = '';
     try {
       const r = await api.runRetention();
-      msg = `Cleanup ran — ${r.deleted} drive(s) removed.`;
+      msg = r.pruned
+        ? `Cleanup ran — ${r.pruned} item(s) from ${r.drives} drive(s), ${gb(r.freed_bytes)} GB freed.`
+        : 'Cleanup ran — nothing to remove.';
       await load();
     } catch (e) {
       error = e.message;
@@ -525,10 +532,34 @@
 
     <div class="card">
       <h3>Retention policy</h3>
-      <p class="muted small">Drives are pruned when any limit is exceeded. 0 = unlimited.</p>
-      <label>Keep drives for (days)<input type="number" min="0" bind:value={cfg.days} /></label>
-      <label>Max drives per device<input type="number" min="0" bind:value={cfg.max_drives} /></label>
+      <p class="muted small">
+        Each data type is pruned on its own; a drive and its stats, map and
+        timeline are never deleted. 0 = keep forever. Logs are small and worth
+        keeping.
+      </p>
+      <table class="ret">
+        <thead>
+          <tr><th>Type</th><th>Stored</th><th>Days</th><th>Drives</th><th>GB</th></tr>
+        </thead>
+        <tbody>
+          {#each RET_TYPES as t}
+            <tr>
+              <td>{TYPE_LABELS[t] || t}</td>
+              <td class="num">{gb(cfg.type_bytes?.[t] || 0)} GB</td>
+              <td><input type="number" min="0" bind:value={cfg.types[t].days} aria-label="{t} days" /></td>
+              <td><input type="number" min="0" bind:value={cfg.types[t].max_drives} aria-label="{t} max drives" /></td>
+              <td><input type="number" min="0" step="0.1" bind:value={cfg.types[t].max_gb} aria-label="{t} max GB" /></td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      <p class="muted small">
+        Days: keep it on drives newer than this. Drives: keep it on the newest N
+        drives per device. GB: oldest drives lose it first above this size.
+        Removing a camera also removes its movie.
+      </p>
       <label>Max total storage (GB)<input type="number" min="0" step="0.1" bind:value={cfg.max_gb} /></label>
+      <p class="muted small">Above this, the oldest drives lose their videos. Logs are never removed by this cap.</p>
       <div class="actions">
         <button disabled={busy} onclick={save}>Save</button>
         <button class="ghost" disabled={busy} onclick={runNow}>Run cleanup now</button>
@@ -558,6 +589,11 @@
   .cond .x { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 12px; }
   .cond .x:hover { color: #f85149; }
   .xs { padding: 3px 9px; font-size: 12px; }
+  table.ret { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 8px; }
+  table.ret th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  table.ret td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  table.ret td.num { color: var(--muted); white-space: nowrap; }
+  table.ret input { width: 64px; }
   .stat { font-size: 16px; }
   .small { font-size: 12px; }
   .ok { color: #3fb950; }

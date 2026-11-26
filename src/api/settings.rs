@@ -1,5 +1,7 @@
 //! Admin settings: view/edit the retention policy and storage stats.
 
+use std::collections::BTreeMap;
+
 use axum::extract::State;
 use axum::Json;
 use serde::Deserialize;
@@ -7,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
-use crate::retention::{self, Policy};
+use crate::retention::{self, Limits};
 use crate::state::AppState;
 use crate::transcode;
 
@@ -28,7 +30,7 @@ where
     Deserialize::deserialize(de).map(Some)
 }
 
-/// GET /v1/admin/retention — current policy + storage usage.
+/// GET /v1/admin/retention — per-type policy + storage usage (total and per type).
 pub async fn get_retention(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -36,32 +38,54 @@ pub async fn get_retention(
     require_admin(&user)?;
     let p = retention::load_policy(&state).await;
     let bytes = retention::storage_bytes(&state).await;
+    let type_bytes = retention::type_bytes(&state).await;
     let (routes,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM routes")
         .fetch_one(&state.pool)
         .await
         .unwrap_or((0,));
     Ok(Json(json!({
-        "days": p.days,
-        "max_drives": p.max_drives,
         "max_gb": p.max_gb,
+        "types": p.types,
+        "type_bytes": type_bytes,
         "storage_bytes": bytes,
         "storage_gb": (bytes as f64) / 1_000_000_000.0,
         "route_count": routes,
     })))
 }
 
-/// POST /v1/admin/retention — update policy (any field; 0 = unlimited).
+#[derive(Deserialize)]
+pub struct RetentionReq {
+    pub max_gb: Option<f64>,
+    /// Limits for some or all types; omitted types are left as they are.
+    pub types: Option<BTreeMap<String, Limits>>,
+}
+
+/// POST /v1/admin/retention — update the whole-store cap and/or per-type limits
+/// (0 = unlimited). Partial: only the fields/types given change.
 pub async fn set_retention(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Json(p): Json<Policy>,
+    Json(req): Json<RetentionReq>,
 ) -> AppResult<Json<Value>> {
     require_admin(&user)?;
-    if p.days < 0 || p.max_drives < 0 || p.max_gb < 0.0 {
-        return Err(AppError::BadRequest("values must be >= 0".into()));
+    let mut p = retention::load_policy(&state).await;
+    if let Some(gb) = req.max_gb {
+        if !(gb >= 0.0 && gb.is_finite()) {
+            return Err(AppError::BadRequest("max_gb must be >= 0".into()));
+        }
+        p.max_gb = gb;
+    }
+    for (t, lim) in req.types.unwrap_or_default() {
+        if !crate::storage::DATA_TYPES.contains(&t.as_str()) {
+            return Err(AppError::BadRequest(format!("unknown data type: {t}")));
+        }
+        if !lim.is_valid() {
+            return Err(AppError::BadRequest(format!("{t}: values must be >= 0")));
+        }
+        p.types.insert(t, lim);
     }
     retention::save_policy(&state, &p).await?;
-    Ok(Json(json!({ "ok": true, "days": p.days, "max_drives": p.max_drives, "max_gb": p.max_gb })))
+    Ok(Json(json!({ "ok": true, "max_gb": p.max_gb, "types": p.types })))
 }
 
 /// POST /v1/admin/retention/run — run a retention pass now.
@@ -70,8 +94,8 @@ pub async fn run_retention(
     AuthUser(user): AuthUser,
 ) -> AppResult<Json<Value>> {
     require_admin(&user)?;
-    let deleted = retention::run_once(&state).await?;
-    Ok(Json(json!({ "deleted": deleted })))
+    let r = retention::run_once(&state).await?;
+    Ok(Json(json!(r)))
 }
 
 /// GET /v1/admin/sync — automatic-sync on/off + loop interval.
