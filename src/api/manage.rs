@@ -15,20 +15,7 @@ use crate::access::can_manage_device;
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
-use crate::storage::{blob_key, split_fullname};
-
-/// Map a selectable type to (candidate filenames, segment URL column).
-fn type_spec(t: &str) -> Option<(&'static [&'static str], &'static str)> {
-    match t {
-        "qcamera" => Some((&["qcamera.ts"], "qcam_url")),
-        "fcamera" => Some((&["fcamera.hevc"], "fcam_url")),
-        "dcamera" => Some((&["dcamera.hevc"], "dcam_url")),
-        "ecamera" => Some((&["ecamera.hevc"], "ecam_url")),
-        "qlog" => Some((&["qlog.zst", "qlog.bz2"], "qlog_url")),
-        "rlog" => Some((&["rlog.zst", "rlog.bz2"], "rlog_url")),
-        _ => None,
-    }
-}
+use crate::storage::{blob_key, split_fullname, type_files as type_spec};
 
 async fn segment_numbers(state: &AppState, fullname: &str) -> AppResult<Vec<i64>> {
     let rows: Vec<(i64,)> = sqlx::query_as(
@@ -175,68 +162,15 @@ pub async fn delete(
         device_removed = crate::devsync::delete_on_device(&state, &device, ts, &files).await?;
     }
 
-    // --- Server delete: blobs + stale transcode caches, then re-aggregate. ---
+    // --- Server delete: blobs, caches and movies, then re-aggregate. ---
     let mut removed = 0u64;
     let mut freed = 0u64;
     if do_server {
-        for &seg in &segs {
-            for t in &req.types {
-                let Some((names, col)) = type_spec(t) else { continue };
-                for name in names {
-                    let key = blob_key(dongle, ts, seg, name);
-                    if let Some(sz) = state.blobs.size(&key).await {
-                        let _ = state.blobs.delete(&key).await;
-                        removed += 1;
-                        freed += sz;
-                    }
-                }
-                clear_segment_col(&state, dongle, ts, seg, col).await;
-                // Camera transcode caches become stale once the source is gone.
-                for cam in ["fcamera", "dcamera", "ecamera"] {
-                    if t == cam {
-                        let p = state.config.transcode_dir().join(format!("{dongle}_{ts}--{seg}--{cam}.ts"));
-                        let _ = tokio::fs::remove_file(&p).await;
-                    }
-                }
-            }
-        }
-
-        crate::parse::recompute_route(&state, dongle, ts).await?;
-
-        // A camera's stitched movie is built from its segments; drop it when those
-        // are deleted so a stale movie isn't served (the sweep rebuilds if re-pulled).
-        for t in &req.types {
-            if crate::movie::MOVIE_CAMS.contains(&t.as_str()) {
-                crate::movie::delete(&state, dongle, ts, t).await;
-            }
-        }
-
-        // Don't let sync re-pull what was just deleted: pin this drive's sync types
-        // to the current effective set minus the deleted types (an explicit
-        // per-drive override). The user can re-enable them in Manage data.
-        let kept: Vec<String> = crate::devsync::effective_route_types(&state, &fullname)
-            .await
-            .into_iter()
-            .filter(|t| !req.types.contains(t))
-            .collect();
-        let _ = crate::devsync::set_route_override(&state, &fullname, Some(&kept)).await;
+        let p = crate::retention::purge_types(&state, dongle, ts, &req.types).await?;
+        removed = p.files;
+        freed = p.bytes;
     }
 
     tracing::info!(%fullname, removed, freed, device_removed, %target, "manage: deleted files");
     Ok(Json(json!({ "removed": removed, "freed_bytes": freed, "device_removed": device_removed })))
-}
-
-/// Clear a segment's URL column for a deleted type (static SQL per column).
-async fn clear_segment_col(state: &AppState, dongle: &str, ts: &str, seg: i64, col: &str) {
-    let canonical = format!("{dongle}|{ts}--{seg}");
-    let sql = match col {
-        "qcam_url" => "UPDATE segments SET qcam_url='' WHERE canonical_name=?",
-        "fcam_url" => "UPDATE segments SET fcam_url='' WHERE canonical_name=?",
-        "dcam_url" => "UPDATE segments SET dcam_url='' WHERE canonical_name=?",
-        "ecam_url" => "UPDATE segments SET ecam_url='' WHERE canonical_name=?",
-        "qlog_url" => "UPDATE segments SET qlog_url='' WHERE canonical_name=?",
-        "rlog_url" => "UPDATE segments SET rlog_url='' WHERE canonical_name=?",
-        _ => return,
-    };
-    let _ = sqlx::query(sql).bind(&canonical).execute(&state.pool).await;
 }

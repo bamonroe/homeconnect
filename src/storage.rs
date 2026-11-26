@@ -74,6 +74,25 @@ impl BlobStore {
     }
 }
 
+/// Every per-segment data type, in display order.
+pub const DATA_TYPES: [&str; 6] = ["qcamera", "fcamera", "dcamera", "ecamera", "qlog", "rlog"];
+
+/// The camera (video) types, as opposed to the logs.
+pub const VIDEO_TYPES: [&str; 4] = ["qcamera", "fcamera", "dcamera", "ecamera"];
+
+/// Map a data type to (candidate per-segment filenames, segment URL column).
+pub fn type_files(t: &str) -> Option<(&'static [&'static str], &'static str)> {
+    match t {
+        "qcamera" => Some((&["qcamera.ts"], "qcam_url")),
+        "fcamera" => Some((&["fcamera.hevc"], "fcam_url")),
+        "dcamera" => Some((&["dcamera.hevc"], "dcam_url")),
+        "ecamera" => Some((&["ecamera.hevc"], "ecam_url")),
+        "qlog" => Some((&["qlog.zst", "qlog.bz2"], "qlog_url")),
+        "rlog" => Some((&["rlog.zst", "rlog.bz2"], "rlog_url")),
+        _ => None,
+    }
+}
+
 /// Build the canonical blob key from its parts.
 pub fn blob_key(dongle: &str, timestamp: &str, segment: i64, file: &str) -> String {
     format!("{dongle}_{timestamp}--{segment}--{file}")

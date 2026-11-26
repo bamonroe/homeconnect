@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::now_millis;
 use crate::error::AppResult;
 use crate::state::AppState;
-use crate::storage::blob_key;
+use crate::storage::{blob_key, type_files};
 
 const SWEEP_INTERVAL: Duration = Duration::from_secs(3600); // hourly
 
@@ -154,6 +154,93 @@ pub async fn run_once(state: &AppState) -> AppResult<usize> {
         tracing::info!(deleted, "retention pass removed routes");
     }
     Ok(deleted)
+}
+
+/// What a purge removed.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Purged {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// Remove some data types from one drive on the **server**, leaving the drive
+/// itself (its rows, telemetry, coords, model, subtitles) and every other type
+/// in place. For each type this deletes the per-segment blobs and clears the
+/// segment URL column; for a camera it also drops that camera's transcode cache
+/// and stitched movie (both built from the deleted source). The route is then
+/// re-aggregated, and its sync types are pinned to exclude what was removed so
+/// devsync doesn't pull it straight back off the device. (`qlog` is always
+/// pulled, so a purged qlog can come back while the device still holds it.)
+pub async fn purge_types(
+    state: &AppState,
+    dongle: &str,
+    ts: &str,
+    types: &[String],
+) -> AppResult<Purged> {
+    let fullname = format!("{dongle}|{ts}");
+    let segs: Vec<(i64,)> =
+        sqlx::query_as("SELECT number FROM segments WHERE canonical_route_name = ?")
+            .bind(&fullname)
+            .fetch_all(&state.pool)
+            .await?;
+
+    let mut out = Purged::default();
+    for (seg,) in &segs {
+        for t in types {
+            let Some((names, col)) = type_files(t) else { continue };
+            for name in names {
+                let key = blob_key(dongle, ts, *seg, name);
+                if let Some(sz) = state.blobs.size(&key).await {
+                    let _ = state.blobs.delete(&key).await;
+                    out.files += 1;
+                    out.bytes += sz;
+                }
+            }
+            clear_segment_col(state, &fullname, *seg, col).await;
+            if matches!(t.as_str(), "fcamera" | "dcamera" | "ecamera") {
+                let p = state.config.transcode_dir().join(format!("{dongle}_{ts}--{seg}--{t}.ts"));
+                if let Ok(m) = tokio::fs::metadata(&p).await {
+                    if tokio::fs::remove_file(&p).await.is_ok() {
+                        out.bytes += m.len();
+                    }
+                }
+            }
+        }
+    }
+
+    crate::parse::recompute_route(state, dongle, ts).await?;
+
+    for t in types {
+        if crate::movie::MOVIE_CAMS.contains(&t.as_str()) {
+            if let Some(sz) = state.blobs.size(&crate::movie::movie_key(dongle, ts, t)).await {
+                out.bytes += sz;
+            }
+            crate::movie::delete(state, dongle, ts, t).await;
+        }
+    }
+
+    let kept: Vec<String> = crate::devsync::effective_route_types(state, &fullname)
+        .await
+        .into_iter()
+        .filter(|t| !types.contains(t))
+        .collect();
+    let _ = crate::devsync::set_route_override(state, &fullname, Some(&kept)).await;
+    Ok(out)
+}
+
+/// Clear a segment's URL column for a removed type (static SQL per column).
+async fn clear_segment_col(state: &AppState, fullname: &str, seg: i64, col: &str) {
+    let canonical = format!("{fullname}--{seg}");
+    let sql = match col {
+        "qcam_url" => "UPDATE segments SET qcam_url='' WHERE canonical_name=?",
+        "fcam_url" => "UPDATE segments SET fcam_url='' WHERE canonical_name=?",
+        "dcam_url" => "UPDATE segments SET dcam_url='' WHERE canonical_name=?",
+        "ecam_url" => "UPDATE segments SET ecam_url='' WHERE canonical_name=?",
+        "qlog_url" => "UPDATE segments SET qlog_url='' WHERE canonical_name=?",
+        "rlog_url" => "UPDATE segments SET rlog_url='' WHERE canonical_name=?",
+        _ => return,
+    };
+    let _ = sqlx::query(sql).bind(&canonical).execute(&state.pool).await;
 }
 
 /// Delete a route: its blobs, transcode cache, and DB rows.
