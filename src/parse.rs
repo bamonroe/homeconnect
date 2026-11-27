@@ -95,6 +95,9 @@ const HARD_ACCEL_MS2: f64 = 2.5;
 /// Following stats only count at or above this speed (~18 mph): in stop-and-go
 /// traffic the time headway (distance / speed) blows up and means little.
 pub const FOLLOW_MIN_MS: f64 = 8.0;
+/// A lead further back than this (time headway) is just a car up the road, not
+/// one being followed, so it's left out of the following stats.
+pub const FOLLOW_MAX_GAP_S: f64 = 3.0;
 /// Time headway below this counts as following close.
 pub const CLOSE_GAP_S: f64 = 1.0;
 /// A radarState older than this is stale, so no lead is reported.
@@ -119,8 +122,8 @@ fn telemetry_stats(t: &[Telem]) -> SegStats {
                     s.engaged_m += dist;
                     s.engaged_s += dt;
                 }
-                if let (Some(d), true) = (t[i].lead_d, v_ms >= FOLLOW_MIN_MS) {
-                    let gap = d as f64 / v_ms;
+                let gap = t[i].lead_d.filter(|_| v_ms >= FOLLOW_MIN_MS).map(|d| d as f64 / v_ms);
+                if let Some(gap) = gap.filter(|&g| g <= FOLLOW_MAX_GAP_S) {
                     let close = gap < CLOSE_GAP_S;
                     s.follow_s += dt;
                     s.follow_gap_sum += gap * dt;

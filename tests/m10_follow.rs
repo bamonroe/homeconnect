@@ -109,7 +109,7 @@ async fn lead_car_lands_in_telemetry_and_following_stats() {
 }
 
 #[tokio::test]
-async fn no_lead_means_no_following() {
+async fn no_near_lead_means_no_following() {
     let tmp = tempfile::tempdir().unwrap();
     let state = new_state(tmp.path()).await;
     let mut raw = Vec::new();
@@ -119,9 +119,12 @@ async fn no_lead_means_no_following() {
     for i in 0..200u64 {
         let t = BASE + i * 50 * MS;
         write_event(&mut raw, t, |ev| ev.init_selfdrive_state().set_enabled(true));
-        // radarState present but leadOne.status false (empty road).
+        // First 5 s: a lead 150 m up the road (5 s gap at 30 m/s), too far to
+        // count. Then radarState with leadOne.status false (empty road).
         write_event(&mut raw, t + 1, |ev| {
-            ev.init_radar_state().init_lead_one().set_d_rel(0.0);
+            let mut l = ev.init_radar_state().init_lead_one();
+            l.set_status(i < 100);
+            l.set_d_rel(if i < 100 { 150.0 } else { 0.0 });
         });
         write_event(&mut raw, t + 2, |ev| ev.init_car_state().set_v_ego(30.0));
     }

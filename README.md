@@ -192,7 +192,7 @@ More can be mined from the qlog data we already collect. Rough priority:
 **Higher value, moderate effort (verify the message is in the qlog first)**
 - [x] **Disengagement reasons** — each disengage tagged by the driver input at the transition (gas / brake / steering override, or manual). (Richer `onroadEvents` reasons still possible.)
 - [x] **Driver attention** — distracted intervals marked on the timeline graph and a HUD "distracted" chip, from `driverMonitoringState` (face detection / distraction / awareness).
-- [x] **Lead car / following distance** — the lead car from `radarState` (in the qlog at 4 Hz): a HUD "lead 32 m · 1.8 s" chip, a following-gap strip under the drive graph, and per-drive + all-time mean gap and share under 1 s, split openpilot vs driver. Counted above 18 mph only.
+- [x] **Lead car / following distance** — the lead car from `radarState` (in the qlog at 4 Hz): a HUD "lead 32 m · 1.8 s" chip, a following-gap strip under the drive graph, and per-drive + all-time mean gap and share under 1 s, split openpilot vs driver. Counted above 18 mph with the car ahead within 3 s.
 - [x] **Device health** — peak temp, free space, memory per drive (`DeviceState`), on the drive stats strip.
 
 **All-drives map** — [x] every drive's GPS path on one map, colored by autonomy (Stats page).

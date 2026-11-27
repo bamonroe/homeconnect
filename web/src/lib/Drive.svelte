@@ -602,7 +602,7 @@
         </span>
       {/if}
       {#if route.follow_seconds > 0}
-        <span class="s" title="Time gap to the car ahead (distance ÷ your speed), above 18 mph. Closest {route.min_gap.toFixed(1)} s.{route.follow_op_seconds > 0 ? ` openpilot ${route.follow_op_gap.toFixed(1)} s` : ''}{route.follow_manual_seconds > 0 ? `, you ${route.follow_manual_gap.toFixed(1)} s` : ''}.">
+        <span class="s" title="Time gap to the car ahead (distance ÷ your speed), counted above 18 mph with the car ahead within 3 s. Closest {route.min_gap.toFixed(1)} s.{route.follow_op_seconds > 0 ? ` openpilot ${route.follow_op_gap.toFixed(1)} s` : ''}{route.follow_manual_seconds > 0 ? `, you ${route.follow_manual_gap.toFixed(1)} s` : ''}.">
           🚗 <b>{Math.round(route.follow_seconds / 60)}</b> min following · <b>{route.follow_gap.toFixed(1)}</b> s gap · <b>{route.close_pct.toFixed(0)}%</b> under 1 s
         </span>
       {/if}

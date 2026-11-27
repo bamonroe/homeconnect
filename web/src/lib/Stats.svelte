@@ -93,7 +93,7 @@
         <div class="stat"><div class="v">{n0(s.regen_pct)}%</div><div class="k">recovered by regen</div></div>
       {/if}
       {#if s.follow_seconds > 0}
-        <div class="stat" title="Time headway to the car ahead (distance ÷ your speed), above 18 mph. {n1(s.follow_seconds / 3600)} h following, closest {n1(s.min_gap)} s.">
+        <div class="stat" title="Time headway to the car ahead (distance ÷ your speed), counted above 18 mph with the car ahead within 3 s. {n1(s.follow_seconds / 3600)} h following, closest {n1(s.min_gap)} s.">
           <div class="v">{n1(s.follow_gap)} s</div><div class="k">avg following gap</div>
         </div>
         {#if s.follow_op_seconds > 60}

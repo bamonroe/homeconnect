@@ -358,7 +358,9 @@ Run the full suite before deploying.
   4 Hz, so a plain `reparse` backfills it. On the IONIQ 5 the lead is the vision
   model's (`radar = false`), not a radar track. `status = false` with all-zero
   fields means no lead (empty road). A lead older than 1 s is dropped, and the
-  stats only count at or above 8 m/s, because the time headway (distance ÷ own
+  stats only count at or above 8 m/s and for gaps up to 3 s (`FOLLOW_MAX_GAP_S`;
+  a car further up the road isn't being followed, and including it pushed the
+  openpilot mean to ~2.5 s against its ~1.45 s setting), because the time headway (distance ÷ own
   speed) blows up in stop-and-go. Check a qlog's message mix with
   `qlog-inspect <path>`. `Live`
   view (WebRTC + remote control) is intentionally out of scope for security.
