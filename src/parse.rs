@@ -60,6 +60,12 @@ struct Telem {
     dm_aware: f32,
     dm_distracted: bool,
     dm_face: bool,
+    // Lead car from radarState.leadOne (omitted when none is tracked): distance
+    // (m) and speed relative to us (m/s, negative = closing).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lead_d: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lead_v: Option<f32>,
 }
 
 /// Aggregate stats derived from a segment's telemetry samples.
@@ -73,17 +79,32 @@ struct SegStats {
     disengage: i64,  // engaged→disengaged transitions
     hard_brake: i64, // distinct hard-braking events
     hard_accel: i64, // distinct hard-acceleration events
+    // Following (see FOLLOW_MIN_MS / CLOSE_GAP_S). Gap = time headway (s).
+    follow_s: f64,
+    follow_gap_sum: f64, // Σ gap·dt, so mean gap = follow_gap_sum / follow_s
+    close_s: f64,
+    follow_op_s: f64,    // …while openpilot longitudinal was on
+    follow_op_gap_sum: f64,
+    close_op_s: f64,
+    min_gap: f64,        // -1 when never following
 }
 
 const MPH_TO_MS: f64 = 0.44704;
 const HARD_BRAKE_MS2: f64 = -3.0; // ~0.3 g
 const HARD_ACCEL_MS2: f64 = 2.5;
+/// Following stats only count at or above this speed (~18 mph): in stop-and-go
+/// traffic the time headway (distance / speed) blows up and means little.
+pub const FOLLOW_MIN_MS: f64 = 8.0;
+/// Time headway below this counts as following close.
+pub const CLOSE_GAP_S: f64 = 1.0;
+/// A radarState older than this is stale, so no lead is reported.
+const LEAD_STALE_NS: u64 = 1_000_000_000;
 
 /// Compute per-segment driving stats from the (≈4 Hz) telemetry series. Distance
 /// is speed-integrated; hard accel/brake are rising-edge counted (a sustained
 /// event counts once); accel is the derivative of speed.
 fn telemetry_stats(t: &[Telem]) -> SegStats {
-    let mut s = SegStats::default();
+    let mut s = SegStats { min_gap: -1.0, ..Default::default() };
     let (mut prev_v, mut in_brake, mut in_accel) = (None::<f64>, false, false);
     for i in 0..t.len() {
         let v_ms = (t[i].speed as f64) * MPH_TO_MS;
@@ -97,6 +118,19 @@ fn telemetry_stats(t: &[Telem]) -> SegStats {
                 if t[i].engaged {
                     s.engaged_m += dist;
                     s.engaged_s += dt;
+                }
+                if let (Some(d), true) = (t[i].lead_d, v_ms >= FOLLOW_MIN_MS) {
+                    let gap = d as f64 / v_ms;
+                    let close = gap < CLOSE_GAP_S;
+                    s.follow_s += dt;
+                    s.follow_gap_sum += gap * dt;
+                    if close { s.close_s += dt; }
+                    if t[i].long {
+                        s.follow_op_s += dt;
+                        s.follow_op_gap_sum += gap * dt;
+                        if close { s.close_op_s += dt; }
+                    }
+                    if s.min_gap < 0.0 || gap < s.min_gap { s.min_gap = gap; }
                 }
                 if let Some(pv) = prev_v {
                     let a = (v_ms - pv) / dt;
@@ -219,6 +253,8 @@ struct Accum {
     cur_dm_face: bool,
     cur_dm_distracted: bool,
     cur_dm_aware: f32,
+    // latest radarState.leadOne: (mono, dRel m, vRel m/s); None = no lead
+    cur_lead: Option<(u64, f32, f32)>,
     seen_selfdrive: bool, // have we read engagement state yet this segment?
     // Device health (from DeviceState).
     max_temp: f32,
@@ -633,6 +669,7 @@ pub fn inspect_qlog(file: &str, raw: &[u8]) -> Vec<(String, usize)> {
             Ok(event::Which::DriverMonitoringState(_)) => "driverMonitoringState",
             Ok(event::Which::GpsLocationExternal(_)) | Ok(event::Which::GpsLocation(_)) => "gpsLocation",
             Ok(event::Which::Thumbnail(_)) => "thumbnail",
+            Ok(event::Which::RadarState(_)) => "radarState",
             Ok(_) => "other",
             Err(_) => "unknown",
         };
@@ -878,6 +915,13 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
             acc.cur_dm_distracted = dm.get_is_distracted();
             acc.cur_dm_aware = dm.get_awareness_status();
         }
+        RadarState(Ok(rs)) => {
+            acc.cur_lead = rs
+                .get_lead_one()
+                .ok()
+                .filter(|l| l.get_status())
+                .map(|l| (mono, l.get_d_rel(), l.get_v_rel()));
+        }
         CarState(Ok(cs)) => {
             // Downsample to ~4 Hz. Wait until we've seen the engagement state in
             // this segment so the `engaged` field is never a stale default
@@ -886,6 +930,8 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
                 acc.last_telem_mono = mono;
                 let gear = cs.get_gear_shifter().map(gear_name).unwrap_or("unknown");
                 let cruise = cs.get_cruise_state().map(|c| c.get_enabled()).unwrap_or(false);
+                let lead = acc.cur_lead.filter(|(m, _, _)| mono.saturating_sub(*m) < LEAD_STALE_NS);
+                let r1 = |x: f32| (x * 10.0).round() / 10.0;
                 acc.telemetry.push(Telem {
                     t,
                     speed: cs.get_v_ego() * 2.236_936, // m/s → mph
@@ -905,6 +951,8 @@ fn accumulate(acc: &mut Accum, which: event::WhichReader, mono: u64) {
                     dm_aware: if acc.cur_dm_active { acc.cur_dm_aware } else { -1.0 },
                     dm_distracted: acc.cur_dm_active && acc.cur_dm_distracted,
                     dm_face: acc.cur_dm_active && acc.cur_dm_face,
+                    lead_d: lead.map(|(_, d, _)| r1(d)),
+                    lead_v: lead.map(|(_, _, v)| r1(v)),
                 });
             }
         }
@@ -1005,8 +1053,11 @@ async fn upsert_segment(
            (canonical_name, canonical_route_name, number, start_lat, start_lng, end_lat, end_lng, \
             miles, start_time_utc_millis, end_time_utc_millis, created_at, \
             engaged_meters, telem_meters, engaged_seconds, drive_seconds, max_speed, \
-            disengage_count, hard_brake_count, hard_accel_count, max_temp, min_free, max_mem) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            disengage_count, hard_brake_count, hard_accel_count, max_temp, min_free, max_mem, \
+            follow_seconds, follow_gap_sum, close_seconds, \
+            follow_op_seconds, follow_op_gap_sum, close_op_seconds, min_gap) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+                 ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(canonical_name) DO UPDATE SET \
            start_lat = excluded.start_lat, start_lng = excluded.start_lng, \
            end_lat = excluded.end_lat, end_lng = excluded.end_lng, miles = excluded.miles, \
@@ -1016,7 +1067,11 @@ async fn upsert_segment(
            engaged_seconds = excluded.engaged_seconds, drive_seconds = excluded.drive_seconds, \
            max_speed = excluded.max_speed, disengage_count = excluded.disengage_count, \
            hard_brake_count = excluded.hard_brake_count, hard_accel_count = excluded.hard_accel_count, \
-           max_temp = excluded.max_temp, min_free = excluded.min_free, max_mem = excluded.max_mem",
+           max_temp = excluded.max_temp, min_free = excluded.min_free, max_mem = excluded.max_mem, \
+           follow_seconds = excluded.follow_seconds, follow_gap_sum = excluded.follow_gap_sum, \
+           close_seconds = excluded.close_seconds, follow_op_seconds = excluded.follow_op_seconds, \
+           follow_op_gap_sum = excluded.follow_op_gap_sum, close_op_seconds = excluded.close_op_seconds, \
+           min_gap = excluded.min_gap",
     )
     .bind(&canonical)
     .bind(&route)
@@ -1040,6 +1095,13 @@ async fn upsert_segment(
     .bind(acc.max_temp)
     .bind(if acc.has_health { acc.min_free } else { -1.0 })
     .bind(acc.max_mem)
+    .bind(st.follow_s)
+    .bind(st.follow_gap_sum)
+    .bind(st.close_s)
+    .bind(st.follow_op_s)
+    .bind(st.follow_op_gap_sum)
+    .bind(st.close_op_s)
+    .bind(st.min_gap)
     .execute(&state.pool)
     .await?;
 
@@ -1160,6 +1222,13 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
         ev_kwh_regen: f64,
         ev_seconds: f64,
         ev_meters: f64,
+        follow_seconds: f64,
+        follow_gap_sum: f64,
+        close_seconds: f64,
+        follow_op_seconds: f64,
+        follow_op_gap_sum: f64,
+        close_op_seconds: f64,
+        min_gap: f64,
     }
 
     let segs: Vec<SegRow> = sqlx::query_as(
@@ -1168,7 +1237,9 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
                 start_time_utc_millis, end_time_utc_millis, \
                 engaged_meters, telem_meters, engaged_seconds, drive_seconds, max_speed, \
                 disengage_count, hard_brake_count, hard_accel_count, max_temp, min_free, max_mem, \
-                ev_kwh_out, ev_kwh_regen, ev_seconds, ev_meters \
+                ev_kwh_out, ev_kwh_regen, ev_seconds, ev_meters, \
+                follow_seconds, follow_gap_sum, close_seconds, \
+                follow_op_seconds, follow_op_gap_sum, close_op_seconds, min_gap \
          FROM segments WHERE canonical_route_name = ? ORDER BY number ASC",
     )
     .bind(&fullname)
@@ -1223,6 +1294,17 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
     let ev_regen: f64 = segs.iter().map(|s| s.ev_kwh_regen).sum();
     let ev_secs: f64 = segs.iter().map(|s| s.ev_seconds).sum();
     let ev_m: f64 = segs.iter().map(|s| s.ev_meters).sum();
+    let follow: [f64; 6] = segs.iter().fold([0.0; 6], |mut a, s| {
+        for (x, v) in a.iter_mut().zip([
+            s.follow_seconds, s.follow_gap_sum, s.close_seconds,
+            s.follow_op_seconds, s.follow_op_gap_sum, s.close_op_seconds,
+        ]) {
+            *x += v;
+        }
+        a
+    });
+    let min_gap = segs.iter().map(|s| s.min_gap).filter(|&g| g >= 0.0).fold(f64::INFINITY, f64::min);
+    let min_gap = if min_gap.is_finite() { min_gap } else { -1.0 };
 
     sqlx::query(
         "UPDATE routes SET \
@@ -1233,7 +1315,9 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
            engaged_meters = ?, telem_meters = ?, engaged_seconds = ?, drive_seconds = ?, \
            max_speed = ?, disengage_count = ?, hard_brake_count = ?, hard_accel_count = ?, \
            max_temp = ?, min_free = ?, max_mem = ?, \
-           ev_kwh_out = ?, ev_kwh_regen = ?, ev_seconds = ?, ev_meters = ? \
+           ev_kwh_out = ?, ev_kwh_regen = ?, ev_seconds = ?, ev_meters = ?, \
+           follow_seconds = ?, follow_gap_sum = ?, close_seconds = ?, \
+           follow_op_seconds = ?, follow_op_gap_sum = ?, close_op_seconds = ?, min_gap = ? \
          WHERE fullname = ?",
     )
     .bind(start_t)
@@ -1267,6 +1351,13 @@ pub async fn recompute_route(state: &AppState, dongle: &str, timestamp: &str) ->
     .bind(ev_regen)
     .bind(ev_secs)
     .bind(ev_m)
+    .bind(follow[0])
+    .bind(follow[1])
+    .bind(follow[2])
+    .bind(follow[3])
+    .bind(follow[4])
+    .bind(follow[5])
+    .bind(min_gap)
     .bind(&fullname)
     .execute(&state.pool)
     .await?;

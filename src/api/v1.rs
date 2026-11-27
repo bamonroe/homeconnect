@@ -286,10 +286,8 @@ pub async fn my_stats(
 ) -> AppResult<Json<Value>> {
     // Per-route metrics, aggregated in Rust so the ignore rules can drop trivial
     // drives from the totals.
-    let rows: Vec<(f64, f64, f64, f64, f64, i64, i64, i64, f64, f64, f64)> = sqlx::query_as(
-        "SELECT length, drive_seconds, engaged_meters, telem_meters, max_speed, \
-                disengage_count, hard_brake_count, hard_accel_count, \
-                ev_kwh_out, ev_kwh_regen, ev_meters FROM routes \
+    let rows: Vec<RouteRow> = sqlx::query_as(
+        "SELECT * FROM routes \
          WHERE maxqlog != -1 AND device_dongle_id IN ( \
             SELECT dongle_id FROM devices WHERE owner_id = ? OR ? = 1 \
             UNION SELECT device_dongle_id FROM authorized_users WHERE user_id = ?)",
@@ -305,27 +303,29 @@ pub async fn my_stats(
     let (mut routes, mut miles, mut drive_s, mut engaged_m, mut telem_m) = (0i64, 0.0, 0.0, 0.0, 0.0);
     let (mut max_speed, mut disengage, mut hard_brake, mut hard_accel) = (0.0f64, 0i64, 0i64, 0i64);
     let (mut ev_out, mut ev_regen, mut ev_m) = (0.0f64, 0.0f64, 0.0f64);
-    for (length, ds, em, tm, ms, dis, hb, ha, eo, er, evm) in rows {
-        if crate::ignore::is_ignored(&rules, length, ds / 60.0) {
+    let mut follow = Follow { min_gap: -1.0, ..Default::default() };
+    for r in rows {
+        if crate::ignore::is_ignored(&rules, r.length, r.drive_seconds / 60.0) {
             continue;
         }
         routes += 1;
-        miles += length;
-        drive_s += ds;
-        engaged_m += em;
-        telem_m += tm;
-        max_speed = max_speed.max(ms);
-        disengage += dis;
-        hard_brake += hb;
-        hard_accel += ha;
-        ev_out += eo;
-        ev_regen += er;
-        ev_m += evm;
+        miles += r.length;
+        drive_s += r.drive_seconds;
+        engaged_m += r.engaged_meters;
+        telem_m += r.telem_meters;
+        max_speed = max_speed.max(r.max_speed);
+        disengage += r.disengage_count;
+        hard_brake += r.hard_brake_count;
+        hard_accel += r.hard_accel_count;
+        ev_out += r.ev_kwh_out;
+        ev_regen += r.ev_kwh_regen;
+        ev_m += r.ev_meters;
+        follow.add(Follow::of(&r));
     }
     let (mi_per_kwh, regen_pct) = ev_ratios(ev_out, ev_regen, ev_m / METERS_PER_MILE);
 
     let engaged_mi = engaged_m / METERS_PER_MILE;
-    Ok(Json(json!({
+    let mut v = json!({
         "routes": routes,
         "miles": miles,
         "drive_hours": drive_s / 3600.0,
@@ -342,7 +342,11 @@ pub async fn my_stats(
         "avg_speed": if drive_s > 0.0 { (telem_m / drive_s) * MPH_PER_MS } else { 0.0 },
         "hard_brake": hard_brake,
         "hard_accel": hard_accel,
-    })))
+    });
+    if let Some(o) = v.as_object_mut() {
+        follow.insert_into(o);
+    }
+    Ok(Json(v))
 }
 
 // ---- user browse endpoints --------------------------------------------
@@ -447,6 +451,71 @@ struct RouteRow {
     ev_kwh_regen: f64,
     ev_seconds: f64,
     ev_meters: f64,
+    follow_seconds: f64,
+    follow_gap_sum: f64,
+    close_seconds: f64,
+    follow_op_seconds: f64,
+    follow_op_gap_sum: f64,
+    close_op_seconds: f64,
+    min_gap: f64,
+}
+
+/// Following-distance sums (see migration 0012): time following, Σ gap·dt and
+/// time close, overall and with openpilot longitudinal on.
+#[derive(Default, Clone, Copy)]
+struct Follow {
+    secs: f64,
+    gap_sum: f64,
+    close: f64,
+    op_secs: f64,
+    op_gap_sum: f64,
+    op_close: f64,
+    min_gap: f64,
+}
+
+impl Follow {
+    fn of(r: &RouteRow) -> Self {
+        Follow {
+            secs: r.follow_seconds,
+            gap_sum: r.follow_gap_sum,
+            close: r.close_seconds,
+            op_secs: r.follow_op_seconds,
+            op_gap_sum: r.follow_op_gap_sum,
+            op_close: r.close_op_seconds,
+            min_gap: r.min_gap,
+        }
+    }
+
+    fn add(&mut self, o: Follow) {
+        self.secs += o.secs;
+        self.gap_sum += o.gap_sum;
+        self.close += o.close;
+        self.op_secs += o.op_secs;
+        self.op_gap_sum += o.op_gap_sum;
+        self.op_close += o.op_close;
+        if o.min_gap >= 0.0 && (self.min_gap < 0.0 || o.min_gap < self.min_gap) {
+            self.min_gap = o.min_gap;
+        }
+    }
+
+    /// Mean gaps (s) and close shares (%), split openpilot vs driver. 0 when
+    /// there's no following time to average over; `min_gap` is -1 then.
+    fn insert_into(&self, o: &mut serde_json::Map<String, Value>) {
+        let mean = |sum: f64, secs: f64| if secs > 0.0 { sum / secs } else { 0.0 };
+        let pct = |part: f64, secs: f64| if secs > 0.0 { 100.0 * part / secs } else { 0.0 };
+        let (man_secs, man_gap, man_close) =
+            (self.secs - self.op_secs, self.gap_sum - self.op_gap_sum, self.close - self.op_close);
+        o.insert("follow_seconds".into(), json!(self.secs));
+        o.insert("follow_gap".into(), json!(mean(self.gap_sum, self.secs)));
+        o.insert("close_pct".into(), json!(pct(self.close, self.secs)));
+        o.insert("follow_op_seconds".into(), json!(self.op_secs));
+        o.insert("follow_op_gap".into(), json!(mean(self.op_gap_sum, self.op_secs)));
+        o.insert("close_op_pct".into(), json!(pct(self.op_close, self.op_secs)));
+        o.insert("follow_manual_seconds".into(), json!(man_secs));
+        o.insert("follow_manual_gap".into(), json!(mean(man_gap, man_secs)));
+        o.insert("close_manual_pct".into(), json!(pct(man_close, man_secs)));
+        o.insert("min_gap".into(), json!(self.min_gap));
+    }
 }
 
 /// Efficiency and regen share from energy totals (0 when not computable).
@@ -520,6 +589,7 @@ fn route_json(r: &RouteRow, public_url: &str, sig: &str) -> Value {
         o.insert("ev_miles".into(), json!(ev_miles));
         o.insert("mi_per_kwh".into(), json!(mi_per_kwh));
         o.insert("regen_pct".into(), json!(regen_pct));
+        Follow::of(r).insert_into(o);
     }
     v
 }

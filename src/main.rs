@@ -106,7 +106,14 @@ async fn run_cli(state: &AppState, args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         "qlog-inspect" => {
-            // usage: qlog-inspect <dongle> <ts> <seg> [file]
+            // usage: qlog-inspect <dongle> <ts> <seg> [file]  |  qlog-inspect <path>
+            if args.len() == 2 {
+                let raw = std::fs::read(&args[1])?;
+                for (k, c) in homeconnect::parse::inspect_qlog(&args[1], &raw) {
+                    println!("{k}: {c}");
+                }
+                return Ok(());
+            }
             let (dongle, ts, seg) = (&args[1], &args[2], args[3].parse::<i64>().unwrap_or(0));
             let files: Vec<String> = match args.get(4) {
                 Some(f) => vec![f.clone()],
