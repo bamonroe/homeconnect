@@ -601,6 +601,11 @@
           ⚡ <b>{route.mi_per_kwh.toFixed(1)}</b> mi/kWh · <b>{(route.ev_kwh_out - route.ev_kwh_regen).toFixed(1)}</b> kWh · <b>{route.ev_kwh_regen.toFixed(1)}</b> regen ({route.regen_pct.toFixed(0)}%)
         </span>
       {/if}
+      {#if route.follow_seconds > 0}
+        <span class="s" title="Time gap to the car ahead (distance ÷ your speed), above 18 mph. Closest {route.min_gap.toFixed(1)} s.{route.follow_op_seconds > 0 ? ` openpilot ${route.follow_op_gap.toFixed(1)} s` : ''}{route.follow_manual_seconds > 0 ? `, you ${route.follow_manual_gap.toFixed(1)} s` : ''}.">
+          🚗 <b>{Math.round(route.follow_seconds / 60)}</b> min following · <b>{route.follow_gap.toFixed(1)}</b> s gap · <b>{route.close_pct.toFixed(0)}%</b> under 1 s
+        </span>
+      {/if}
     </div>
   {/if}
 
@@ -669,6 +674,10 @@
                     {#if tnow.engaged}<span class="chip on">openpilot{tnow.lat === true && tnow.long === false ? ' · steer' : tnow.long === true && tnow.lat === false ? ' · cruise' : ''}</span>{/if}
                     {#if tnow.brake}<span class="chip brk">brake</span>{/if}
                     {#if tnow.dm_distracted}<span class="chip distr">distracted</span>{/if}
+                    {#if tnow.lead_d != null}
+                      {@const gap = tnow.speed > 2 ? tnow.lead_d / (tnow.speed * 0.44704) : null}
+                      <span class="chip lead" class:close={gap != null && gap < 1}>lead {Math.round(tnow.lead_d)} m{gap != null ? ` · ${gap.toFixed(1)} s` : ''}</span>
+                    {/if}
                     <span class="arrow" class:lit={tnow.lb}>◀</span>
                     <span class="arrow" class:lit={tnow.rb}>▶</span>
                   </div>
@@ -825,6 +834,7 @@
   .chip.on { background: #2f81f7; border-color: #2f81f7; }
   .chip.brk { background: #f85149; border-color: #f85149; }
   .chip.distr { background: #a371f7; border-color: #a371f7; }
+  .chip.lead.close { background: #d29922; border-color: #d29922; color: #000; }
   .arrow { font-size: 16px; color: #444; }
   .arrow.lit { color: #3fb950; }
   .ctrl { display: flex; align-items: center; justify-content: space-between; gap: 8px 10px; flex-wrap: wrap; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; }

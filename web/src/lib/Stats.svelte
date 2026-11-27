@@ -92,6 +92,22 @@
         <div class="stat"><div class="v">{n0(s.ev_kwh_out - s.ev_kwh_regen)}</div><div class="k">kWh used</div></div>
         <div class="stat"><div class="v">{n0(s.regen_pct)}%</div><div class="k">recovered by regen</div></div>
       {/if}
+      {#if s.follow_seconds > 0}
+        <div class="stat" title="Time headway to the car ahead (distance ÷ your speed), above 18 mph. {n1(s.follow_seconds / 3600)} h following, closest {n1(s.min_gap)} s.">
+          <div class="v">{n1(s.follow_gap)} s</div><div class="k">avg following gap</div>
+        </div>
+        {#if s.follow_op_seconds > 60}
+          <div class="stat" title="{n0(s.close_op_pct)}% of openpilot's following was under 1 s.">
+            <div class="v">{n1(s.follow_op_gap)} s</div><div class="k">gap on openpilot</div>
+          </div>
+        {/if}
+        {#if s.follow_manual_seconds > 60}
+          <div class="stat" title="{n0(s.close_manual_pct)}% of your following was under 1 s.">
+            <div class="v">{n1(s.follow_manual_gap)} s</div><div class="k">gap driving yourself</div>
+          </div>
+        {/if}
+        <div class="stat"><div class="v">{n0(s.close_pct)}%</div><div class="k">of following under 1 s</div></div>
+      {/if}
     </div>
 
     <div class="mapwrap">

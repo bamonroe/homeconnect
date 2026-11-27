@@ -98,6 +98,29 @@
     return { out: area((k) => Math.max(0, k)), regen: area((k) => Math.min(0, k)) };
   });
 
+  // Following gap: one bar per telemetry sample with a lead at ≥ 8 m/s (the
+  // backend's floor), height = time headway capped at GAP_MAX, colored close /
+  // near / comfortable. Three paths, so long drives stay a handful of nodes.
+  const GH = 30, GAP_MAX = 3, MPH = 0.44704;
+  let gaps = $derived.by(() => {
+    const out = { close: '', near: '', ok: '' };
+    let any = false;
+    for (let i = 0; i < telemetry.length; i++) {
+      const s = telemetry[i];
+      const v = (s.speed || 0) * MPH;
+      if (s.lead_d == null || v < 8) continue;
+      any = true;
+      const gap = s.lead_d / v;
+      const next = telemetry[i + 1];
+      const dt = next && next.t - s.t < 2 ? next.t - s.t : 0.25;
+      const x = (s.t / maxT) * W, w = Math.max(0.6, (dt / maxT) * W);
+      const h = (Math.min(gap, GAP_MAX) / GAP_MAX) * (GH - 2);
+      const k = gap < 1 ? 'close' : gap < 1.5 ? 'near' : 'ok';
+      out[k] += `M${x.toFixed(1)},${GH}v${(-h).toFixed(1)}h${w.toFixed(2)}v${h.toFixed(1)}Z`;
+    }
+    return any ? out : null;
+  });
+
   let playX = $derived((Math.min(curT, maxT) / maxT) * W);
 
   function click(e) {
@@ -120,12 +143,22 @@
       {#each distracted as d}<rect class="distr" x={d.x} y={H - 6} width={d.w} height="6" />{/each}
       <line class="play" x1={playX} x2={playX} y1="0" y2={H} />
     </svg>
+    {#if gaps}
+      <svg class="gapstrip" viewBox="0 0 {W} {GH}" preserveAspectRatio="none" onclick={click} role="presentation">
+        <line class="gap1" x1="0" x2={W} y1={GH - (1 / GAP_MAX) * (GH - 2)} y2={GH - (1 / GAP_MAX) * (GH - 2)} />
+        <path class="gclose" d={gaps.close} />
+        <path class="gnear" d={gaps.near} />
+        <path class="gok" d={gaps.ok} />
+        <line class="play" x1={playX} x2={playX} y1="0" y2={GH} />
+      </svg>
+    {/if}
     <div class="legend muted small">
       <span><i class="eng"></i> openpilot</span>
       <span><i class="brake"></i> hard brake</span>
       <span><i class="accel"></i> hard accel</span>
       {#if hasDM}<span><i class="distr"></i> distracted</span>{/if}
       {#if power.length > 1}<span><i class="pout"></i> power</span><span><i class="pregen"></i> regen</span>{/if}
+      {#if gaps}<span title="Bars under the graph: time gap to the car ahead (up to 3 s; the line marks 1 s)"><i class="gok"></i><i class="gnear"></i><i class="gclose"></i> following gap</span>{/if}
       <span class="right">peak {Math.round(maxSpeed)} mph{#if power.length > 1} · {Math.round(maxKw)} kW{/if}</span>
     </div>
   </div>
@@ -141,6 +174,11 @@
   .distr { fill: #a371f7; opacity: 0.9; }
   .pout { fill: #d29922; opacity: 0.35; }
   .pregen { fill: #3fb950; opacity: 0.45; }
+  .gapstrip { height: 22px; margin-top: 3px; }
+  .gok { fill: #2f81f7; opacity: 0.6; }
+  .gnear { fill: #d29922; opacity: 0.8; }
+  .gclose { fill: #f85149; opacity: 0.9; }
+  .gap1 { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.5; vector-effect: non-scaling-stroke; }
   .play { stroke: #fff; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
   .legend { display: flex; gap: 12px; align-items: center; margin-top: 4px; }
   .legend .right { margin-left: auto; }
@@ -151,4 +189,7 @@
   .legend i.distr { background: #a371f7; }
   .legend i.pout { background: #d29922; opacity: 0.6; }
   .legend i.pregen { background: #3fb950; opacity: 0.7; }
+  .legend i.gok { background: #2f81f7; opacity: 0.7; margin-right: 0; border-radius: 2px 0 0 2px; }
+  .legend i.gnear { background: #d29922; margin-right: 0; border-radius: 0; }
+  .legend i.gclose { background: #f85149; border-radius: 0 2px 2px 0; }
 </style>
