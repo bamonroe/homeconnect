@@ -66,7 +66,7 @@ macros).
 | File | Responsibility |
 |---|---|
 | `lib.rs` | `build_state()`, the axum `router()`, all route wiring |
-| `main.rs` | bootstrap, tracing, CLI subcommands (`create-user`, `reparse`, `reparse-rlog`, `ev-inspect`), spawns workers |
+| `main.rs` | bootstrap, tracing, CLI subcommands (`create-user`, `reparse`, `reparse-rlog`, `ev-inspect`, `qlog-inspect`), spawns workers |
 | `config.rs` | `Config` from `HC_*` env (bind, data dir, public URL, jwt secret, web dir, retention, `vaapi_device`, sync/movie/autoprune seeds) |
 | `state.rs` | `AppState { config, pool, blobs, athena, sync_queue, movie_queue }` |
 | `db.rs` | SQLite pool (WAL), `migrate!`, `now_millis/now_secs` |
@@ -76,7 +76,7 @@ macros).
 | `access.rs` | `can_view_device/dongle/route` + `load_device` authorization helpers |
 | `storage.rs` | filesystem blob store; key = `{dongle}_{ts}--{seg}--{file}`, sharded by sha256 |
 | `ingest.rs` | `connectincoming` PUT handlers; qlog→parse, everything else→register URL |
-| `parse.rs` | qlog decode (capnp) → routes/segments + coords/events/telemetry (incl. MADS lateral/longitudinal engagement + driver monitoring: face/distracted/awareness)/sprite + per-drive stats; `extract_model` builds `model.json` (modelV2 path/lanes/lead from the rlog) for the overlay/top-down; `extract_ev` builds `ev.json` (EV pack power/current/voltage/SoC + motor force, 0.5 s averages) and per-segment `ev_kwh_out/ev_kwh_regen/ev_seconds/ev_meters` (mig 0011, summed onto routes) — both via `parse_rlog_and_store`, one decompress per rlog; haversine; route aggregation; `reparse_all` |
+| `parse.rs` | qlog decode (capnp) → routes/segments + coords/events/telemetry (incl. MADS lateral/longitudinal engagement + driver monitoring: face/distracted/awareness + the `radarState` lead car `lead_d`/`lead_v`)/sprite + per-drive stats (incl. following distance, mig 0012: `follow_*`/`close_*`/`min_gap`, time headway at ≥ `FOLLOW_MIN_MS`, split by openpilot longitudinal); `extract_model` builds `model.json` (modelV2 path/lanes/lead from the rlog) for the overlay/top-down; `extract_ev` builds `ev.json` (EV pack power/current/voltage/SoC + motor force, 0.5 s averages) and per-segment `ev_kwh_out/ev_kwh_regen/ev_seconds/ev_meters` (mig 0011, summed onto routes) — both via `parse_rlog_and_store`, one decompress per rlog; haversine; route aggregation; `reparse_all` |
 | `cereal/mod.rs` | generated capnp bindings (built by `build.rs` from `vendor/cereal`) |
 | `athena.rs` | device websocket: `ConnectionManager`, 10s ping, online/offline, stale reaper |
 | `serve.rs` | `connectdata` blob serving with HTTP Range (206); transcode + audio serving |
@@ -237,7 +237,8 @@ They use synthetic ES256 devices (openssl) and synthetic/real cereal qlogs:
 `m4_spa`, `m5_transcode`, `m6_retention`, `m7_devsync` (shared ingest core +
 idempotency; `devsync.rs` also has inline unit tests for the realdata path parser
 and tier filter), `m_pairing`, `m_onboard`, `m_manage` (zip download + delete),
-`m_transcode_device`, `m9_ev` (EV decode, energy totals in either rlog/qlog
+`m_transcode_device`, `m10_follow` (radarState lead → telemetry, following
+stats, stale-lead drop, speed floor), `m9_ev` (EV decode, energy totals in either rlog/qlog
 order, non-IONIQ gating), `m_subs` (subtitle status/serve/delete + public-share
 access; `subs.rs` has inline unit tests for the VTT parse/shift/render round trip).
 Run the full suite before deploying.
@@ -352,5 +353,12 @@ Run the full suite before deploying.
   minute). An rlog ingested before its qlog writes `ev.json` but has no segment row
   yet; `parse_and_store` re-applies the totals from `ev.json`. `0x4D8`
   (`CLUSTER_INFO`) is *not* the state of charge. Backfill: `reparse-rlog`; check
-  one file: `ev-inspect <path>`. `Live`
+  one file: `ev-inspect <path>`.
+- **Following distance comes from `radarState.leadOne`**, which is in the qlog at
+  4 Hz, so a plain `reparse` backfills it. On the IONIQ 5 the lead is the vision
+  model's (`radar = false`), not a radar track. `status = false` with all-zero
+  fields means no lead (empty road). A lead older than 1 s is dropped, and the
+  stats only count at or above 8 m/s, because the time headway (distance ÷ own
+  speed) blows up in stop-and-go. Check a qlog's message mix with
+  `qlog-inspect <path>`. `Live`
   view (WebRTC + remote control) is intentionally out of scope for security.

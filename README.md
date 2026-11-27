@@ -32,13 +32,15 @@ transcoding, plus log **retention**) than the fleet-oriented stacks.
   (cached after first view). Optional **GPU acceleration** (VAAPI) with a
   CPU fallback, and a runtime **device selector** (CPU / any detected GPU).
 - **Telemetry HUD + model overlay** — a HUD synced to playback shows **speed, gear,
-  turn signals, brake, and openpilot engagement** — distinguishing **sunnypilot MADS
+  turn signals, brake, openpilot engagement and the lead car's distance and time
+  gap** — distinguishing **sunnypilot MADS
   lateral (steering) vs longitudinal (cruise)** assist. A calibrated **model overlay**
   draws openpilot's path / lanes / lead *on* the road video, plus a **top-down**
   bird's-eye view, both from `modelV2`.
 - **Trip stats & autonomy** — per-drive and all-time **Stats** page: autonomy %,
-  disengagements, avg/max speed, drive time, device health, and an all-drives map
-  colored by autonomy.
+  disengagements, avg/max speed, drive time, device health, following distance
+  (time gap to the car ahead, openpilot vs you, share under 1 s), and an
+  all-drives map colored by autonomy.
 - **Map + movable panes** — MapLibre route path with a marker that tracks playback;
   the video / map / timeline / top-down / events panes are **draggable, resizable
   tiles** (layout saved); 0.5×–8× playback speed and an audio **volume boost**.
@@ -190,7 +192,7 @@ More can be mined from the qlog data we already collect. Rough priority:
 **Higher value, moderate effort (verify the message is in the qlog first)**
 - [x] **Disengagement reasons** — each disengage tagged by the driver input at the transition (gas / brake / steering override, or manual). (Richer `onroadEvents` reasons still possible.)
 - [x] **Driver attention** — distracted intervals marked on the timeline graph and a HUD "distracted" chip, from `driverMonitoringState` (face detection / distraction / awareness).
-- [ ] **Lead car / following distance** over time (`radarState`).
+- [x] **Lead car / following distance** — the lead car from `radarState` (in the qlog at 4 Hz): a HUD "lead 32 m · 1.8 s" chip, a following-gap strip under the drive graph, and per-drive + all-time mean gap and share under 1 s, split openpilot vs driver. Counted above 18 mph only.
 - [x] **Device health** — peak temp, free space, memory per drive (`DeviceState`), on the drive stats strip.
 
 **All-drives map** — [x] every drive's GPS path on one map, colored by autonomy (Stats page).
