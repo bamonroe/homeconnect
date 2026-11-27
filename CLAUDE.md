@@ -168,6 +168,14 @@ macros).
   qcamera.ts carries video too) — `adelay` is deterministic. The qcamera "Road"
   movie takes both A/V from the one qcamera input, so that intrinsic gap stays
   aligned without `adelay`.
+  **The gap can exceed ffmpeg's probe window.** On many drives the mic starts
+  10-15 s in, past the default 5 s / 5 MB probe: the audio stream then has no
+  channels, ffprobe reports it starting *with* the video (lead 0, so the movie
+  audio plays ~15 s early), and an audio-only extract fails outright ("Output
+  file does not contain any stream", which is what broke subtitles on those
+  drives). Every ffmpeg/ffprobe that opens qcamera audio passes
+  `transcode::AUDIO_PROBE` right before its `-i`; `av_lead` probes the first two
+  segments as one input and clamps to 60 s.
 - **Movie playbackRate (CFR)**: a movie must be **constant-frame-rate** or browsers
   ignore `<video>.playbackRate` (the speed toggles silently do nothing). The HEVC
   cams are encoded at `-r 20` (CFR) so they're fine; the qcamera movie was once a

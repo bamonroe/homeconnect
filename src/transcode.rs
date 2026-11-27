@@ -19,6 +19,16 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::storage::blob_key;
 
+/// Input options that let ffmpeg/ffprobe look far enough into a qcamera file to
+/// find its audio. On some drives the mic starts 10-15 s after the camera in the
+/// first segment, past ffmpeg's default 5 MB / 5 s probe window: the audio
+/// stream then shows up with no channels or sample rate, extraction fails
+/// ("Output file does not contain any stream"), and ffprobe reports the audio
+/// starting with the video, hiding the gap. Probing stops as soon as every
+/// stream is identified, so this costs nothing on files that start normally.
+/// These are per-input options: put them right before the `-i` they apply to.
+pub const AUDIO_PROBE: [&str; 4] = ["-analyzeduration", "120M", "-probesize", "50M"];
+
 /// Settings key for the runtime-selected transcode device.
 const DEVICE_KEY: &str = "transcode_device";
 
@@ -411,7 +421,8 @@ pub async fn ensure_audio(
     let tmp_s = tmp.to_string_lossy().to_string();
     let offset = (seg.max(0) * SEGMENT_SECS).to_string();
     let args: Vec<String> = [
-        "-nostdin", "-y", "-i", &src_s, "-vn", "-c:a", "copy",
+        "-nostdin", "-y", AUDIO_PROBE[0], AUDIO_PROBE[1], AUDIO_PROBE[2], AUDIO_PROBE[3],
+        "-i", &src_s, "-vn", "-c:a", "copy",
         "-output_ts_offset", &offset, "-muxdelay", "0", "-f", "mpegts", &tmp_s,
     ]
     .iter()

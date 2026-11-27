@@ -324,7 +324,7 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str, cam: &str) -> AppRe
     // of a drive (later segments are aligned). Concatenating audio separately drops
     // that lead-in, shifting the whole track early — so delay the audio input by the
     // first segment's measured audio-vs-video gap to realign it.
-    let mut lead = if have_audio { av_lead(&a_paths[0]).await } else { 0.0 };
+    let mut lead = if have_audio { av_lead(&a_paths).await } else { 0.0 };
 
     // Optional speech enhancement: the raw track is mostly road and wind noise.
     // The cleaned WAV already carries the lead-in silence, so no further delay —
@@ -391,30 +391,43 @@ async fn nonempty(path: &std::path::Path) -> bool {
     tokio::fs::metadata(path).await.map(|m| m.len() > 0).unwrap_or(false)
 }
 
-/// How far the audio track starts after the video in a source file (seconds). On
-/// the comma the mic spins up a couple seconds after the camera on the first
-/// segment of a drive; this is used to delay the muxed audio so it realigns.
-/// Clamped to [0, 10]; 0 on any probe failure.
-pub(crate) async fn av_lead(path: &str) -> f64 {
+/// How far a drive's audio starts after its video (seconds). The comma's mic
+/// spins up after the camera on the first segment of a drive — usually 2-3 s,
+/// but up to ~15 s on some drives — and concatenating the audio on its own drops
+/// that gap, so the muxed track is delayed by this much to realign it. Probes
+/// the first two segments as one input (their timestamps are continuous), so a
+/// mic that only starts in the second segment is still measured. Clamped to
+/// [0, 60]; 0 on any probe failure.
+pub(crate) async fn av_lead(paths: &[String]) -> f64 {
+    if paths.is_empty() {
+        return 0.0;
+    }
+    let input = if paths.len() == 1 { paths[0].clone() } else { concat_input(&paths[..2]) };
     let out = Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries", "stream=codec_type,start_time", "-of", "csv=p=0"])
-        .arg(path)
+        .args(["-v", "error"])
+        .args(transcode::AUDIO_PROBE)
+        .args(["-show_entries", "stream=codec_type,start_time", "-of", "csv=p=0"])
+        .arg(&input)
         .output()
         .await;
     let Ok(out) = out else { return 0.0 };
-    let text = String::from_utf8_lossy(&out.stdout);
+    parse_lead(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The audio-minus-video start gap from ffprobe's `codec_type,start_time` CSV.
+fn parse_lead(text: &str) -> f64 {
     let mut v = None;
     let mut a = None;
     for line in text.lines() {
         let mut it = line.split(',');
         match (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
-            (Some("video"), Some(t)) => v = Some(t),
-            (Some("audio"), Some(t)) => a = Some(t),
+            (Some("video"), Some(t)) => v = v.or(Some(t)),
+            (Some("audio"), Some(t)) => a = a.or(Some(t)),
             _ => {}
         }
     }
     match (v, a) {
-        (Some(v), Some(a)) => (a - v).clamp(0.0, 10.0),
+        (Some(v), Some(a)) => (a - v).clamp(0.0, 60.0),
         _ => 0.0,
     }
 }
@@ -500,6 +513,7 @@ fn vaapi_args(dev: &str, src: Src, v_in: &str, a_in: &str, audio: bool, lead: f6
     a.extend(src.input_args());
     a.extend(["-i", v_in].iter().map(|s| s.to_string()));
     if audio {
+        a.extend(transcode::AUDIO_PROBE.iter().map(|s| s.to_string()));
         a.extend(["-i", a_in].iter().map(|s| s.to_string()));
     }
     // scale_vaapi handles the optional downscale on the GPU; qp tracks the CRF.
@@ -537,6 +551,7 @@ fn nvenc_args(src: Src, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &E
     a.extend(src.input_args());
     a.extend(["-c:v", src.cuvid(), "-i", v_in].iter().map(|s| s.to_string()));
     if audio {
+        a.extend(transcode::AUDIO_PROBE.iter().map(|s| s.to_string()));
         a.extend(["-i", a_in].iter().map(|s| s.to_string()));
     }
     a.extend(["-map", "0:v:0"].iter().map(|s| s.to_string()));
@@ -570,6 +585,7 @@ fn cpu_args(src: Src, v_in: &str, a_in: &str, audio: bool, lead: f64, opts: &Enc
     a.extend(src.input_args());
     a.extend(["-i", v_in].iter().map(|s| s.to_string()));
     if audio {
+        a.extend(transcode::AUDIO_PROBE.iter().map(|s| s.to_string()));
         a.extend(["-i", a_in].iter().map(|s| s.to_string()));
     }
     a.extend(["-map", "0:v:0"].iter().map(|s| s.to_string()));
@@ -837,4 +853,48 @@ pub fn spawn(state: AppState) {
             state.movie_queue.wait_or_request(secs).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lead_is_audio_minus_video_start() {
+        assert_eq!(parse_lead("video,30.0\naudio,44.5\n"), 14.5);
+        assert_eq!(parse_lead("audio,1.0\nvideo,3.0\n"), 0.0); // never negative
+        assert_eq!(parse_lead("video,0.0\naudio,500.0\n"), 60.0); // clamped
+        assert_eq!(parse_lead("video,0.0\n"), 0.0); // no audio
+        assert_eq!(parse_lead(""), 0.0);
+    }
+
+    /// A first segment whose mic starts 15 s in — past ffmpeg's default 5 s probe
+    /// window, which reports the audio with no parameters and no gap.
+    #[tokio::test]
+    async fn late_mic_is_measured() {
+        let dir = std::env::temp_dir().join(format!("hc-avlead-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ts = dir.join("late.ts");
+        let made = Command::new("ffmpeg")
+            .args(["-nostdin", "-y", "-v", "error"])
+            .args(["-f", "lavfi", "-i", "testsrc=size=320x240:rate=20:duration=30"])
+            .args(["-itsoffset", "15", "-f", "lavfi", "-i", "sine=frequency=440:duration=15"])
+            .args(["-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-c:a", "aac", "-f", "mpegts"])
+            .arg(&ts)
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("skipping: ffmpeg unavailable");
+            return;
+        }
+        let p = ts.to_string_lossy().to_string();
+        let lead = av_lead(&[p.clone()]).await;
+        assert!((lead - 15.0).abs() < 0.5, "lead {lead}");
+        // The two-segment probe path measures the same gap.
+        let lead2 = av_lead(&[p.clone(), p]).await;
+        assert!((lead2 - 15.0).abs() < 0.5, "lead2 {lead2}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

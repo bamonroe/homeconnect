@@ -143,7 +143,7 @@ pub async fn build(state: &AppState, dongle: &str, ts: &str) -> AppResult<usize>
 
     // Mirror the movie's audio timeline exactly: same concatenation, same
     // first-segment mic-startup delay, so a cue at t lands where the movie plays it.
-    let lead = crate::movie::av_lead(&paths[0]).await;
+    let lead = crate::movie::av_lead(&paths).await;
     let dir = tempdir(state, &fullname).await?;
     let wav = dir.join("audio.wav");
 
@@ -231,8 +231,10 @@ async fn cleanup(dir: &std::path::Path) {
 /// the movie's.
 async fn extract_wav(paths: &[String], lead: f64, out: &std::path::Path) -> bool {
     let input = format!("concat:{}", paths.join("|"));
-    let mut args: Vec<String> = ["-nostdin", "-y", "-fflags", "+genpts", "-i", &input, "-vn"]
+    let mut args: Vec<String> = ["-nostdin", "-y", "-fflags", "+genpts"]
         .iter()
+        .chain(crate::transcode::AUDIO_PROBE.iter())
+        .chain(["-i", &input, "-vn"].iter())
         .map(|s| s.to_string())
         .collect();
     if lead > 0.01 {

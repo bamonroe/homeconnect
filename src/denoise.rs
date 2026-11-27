@@ -210,8 +210,10 @@ pub async fn cleanup(dir: &std::path::Path) {
 /// seconds of silence so the track still lines up with the video.
 async fn extract_wav(paths: &[String], lead: f64, out: &std::path::Path) -> bool {
     let input = format!("concat:{}", paths.join("|"));
-    let mut args: Vec<String> = ["-nostdin", "-y", "-fflags", "+genpts", "-i", &input, "-vn"]
+    let mut args: Vec<String> = ["-nostdin", "-y", "-fflags", "+genpts"]
         .iter()
+        .chain(crate::transcode::AUDIO_PROBE.iter())
+        .chain(["-i", &input, "-vn"].iter())
         .map(|s| s.to_string())
         .collect();
     if lead > 0.01 {
